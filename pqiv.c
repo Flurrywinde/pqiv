@@ -177,7 +177,9 @@ gboolean image_loader_initialization_succeeded = FALSE;
 gboolean current_image_drawn = FALSE;
 
 // Variables related to the window, display, etc.
+GtkDrawingArea *main_area;
 GtkWindow *main_window;
+GtkLabel *status_bar;
 gboolean main_window_visible = FALSE;
 
 // Detection of tiled WMs: They should ignore our resize events
@@ -186,8 +188,9 @@ gint requested_main_window_width = -1;
 gint requested_main_window_height = -1;
 gboolean wm_ignores_size_requests = FALSE;
 
-gint main_window_width = 10;
-gint main_window_height = 10;
+gint main_area_width = 10;
+gint main_area_height = 10;
+gint status_bar_height = 0;
 gboolean main_window_in_fullscreen = FALSE;
 int fullscreen_transition_source_id = -1;
 GdkRectangle screen_geometry = { 0, 0, 0, 0 };
@@ -752,14 +755,14 @@ void window_show_cursor();
 void preload_adjacent_images();
 void window_center_mouse();
 double calculate_scale_level_to_fit(int image_width, int image_height, int window_width, int window_height);
-gboolean main_window_calculate_ideal_size(int *new_window_width, int *new_window_height);
+gboolean main_area_calculate_ideal_size(int *new_area_width, int *new_area_height);
 void calculate_current_image_transformed_size(int *image_width, int *image_height);
 double calculate_auto_scale_level_for_screen(int image_width, int image_height);
 cairo_surface_t *get_scaled_image_surface_for_current_image();
 gboolean window_state_into_fullscreen_actions(gpointer user_data);
 gboolean window_state_out_of_fullscreen_actions(gpointer user_data);
-gboolean window_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_data);
-void window_prerender_background_pixmap(int window_width, int window_height, double scale_level, gboolean fullscreen);
+gboolean main_area_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_data);
+void prerender_background_pixmap(int area_width, int area_height, double scale_level, gboolean fullscreen);
 void window_clear_background_pixmap();
 gboolean window_show_background_pixmap_cb(gpointer user_data);
 BOSNode *image_pointer_by_name(gchar *display_name);
@@ -1434,7 +1437,7 @@ BOSNode *load_images_handle_parameter_add_file(load_images_state_t state, file_t
 			D_LOCK(file_tree);
 			montage_window_move_cursor(0, 0,  0);
 			D_UNLOCK(file_tree);
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 		}
 		#endif
 	}
@@ -1502,8 +1505,8 @@ gpointer load_images_handle_parameter_thread(char *param) {/*{{{*/
 	// Free()s param after run
 	load_images_handle_parameter(param, PARAMETER, 0, NULL);
 	g_free(param);
-	if(main_window) {
-		gtk_widget_queue_draw(GTK_WIDGET(main_window));
+	if(main_area) {
+		gtk_widget_queue_draw(GTK_WIDGET(main_area));
 	}
 	return NULL;
 }/*}}}*/
@@ -1977,7 +1980,7 @@ gboolean image_animation_timeout_callback(gpointer user_data) {/*{{{*/
 	}
 
 	invalidate_current_scaled_image_surface();
-	gtk_widget_queue_draw(GTK_WIDGET(main_window));
+	gtk_widget_queue_draw(GTK_WIDGET(main_area));
 
 	return FALSE;
 }/*}}}*/
@@ -2048,10 +2051,10 @@ gboolean main_window_resize_callback(gpointer user_data) {/*{{{*/
 
 	// Recalculate the required window size
 	int new_window_width = current_scale_level * image_width;
-	int new_window_height = current_scale_level * image_height;
+	int new_window_height = current_scale_level * image_height + status_bar_height;
 
 	// Resize if this has not worked before, but accept a slight deviation (might be round-off error)
-	if(main_window_width >= 0 && abs(main_window_width - new_window_width) + abs(main_window_height - new_window_height) > 1) {
+	if(main_area_width >= 0 && abs(main_area_width - new_window_width) + abs(main_area_height - new_window_height) > 1) {
 		requested_main_window_width = new_window_width;
 		requested_main_window_height = new_window_height;
 		gtk_window_resize(main_window, new_window_width / screen_scale_factor, new_window_height / screen_scale_factor);
@@ -2059,7 +2062,7 @@ gboolean main_window_resize_callback(gpointer user_data) {/*{{{*/
 
 	return FALSE;
 }/*}}}*/
-gboolean main_window_calculate_ideal_size(int *new_window_width, int *new_window_height) {/*{{{*/
+gboolean main_area_calculate_ideal_size(int *new_area_width, int *new_area_height) {/*{{{*/
 	if(!current_file_node) {
 		return FALSE;
 	}
@@ -2073,27 +2076,27 @@ gboolean main_window_calculate_ideal_size(int *new_window_width, int *new_window
 		int image_width, image_height;
 		calculate_current_image_transformed_size(&image_width, &image_height);
 
-		*new_window_width = current_scale_level * image_width + 0.5;
-		*new_window_height = current_scale_level * image_height + 0.5;
+		*new_area_width = current_scale_level * image_width + 0.5;
+		*new_area_height = current_scale_level * image_height + 0.5;
 	}
 	#ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
 	else if(application_mode == MONTAGE) {
 		const int screen_width = screen_geometry.width;
 		const int screen_height = screen_geometry.height;
 
-		*new_window_width = screen_width * option_scale_screen_fraction;
-		*new_window_height = screen_height * option_scale_screen_fraction;
+		*new_area_width = screen_width * option_scale_screen_fraction;
+		*new_area_height = screen_height * option_scale_screen_fraction - status_bar_height;
 	}
 	#endif
 	else {
-		*new_window_width = *new_window_height = 0;
+		*new_area_width = *new_area_height = 0;
 	}
 
-	if(*new_window_height <= 0) {
-		*new_window_height = 1;
+	if(*new_area_height <= 0) {
+		*new_area_height = 1;
 	}
-	if(*new_window_width <= 0) {
-		*new_window_width = 1;
+	if(*new_area_width <= 0) {
+		*new_area_width = 1;
 	}
 
 	return TRUE;
@@ -2120,15 +2123,15 @@ void main_window_adjust_for_image() {/*{{{*/
 		return;
 	}
 
-	int new_window_width, new_window_height;
-	if(!main_window_calculate_ideal_size(&new_window_width, &new_window_height)) {
+	int new_area_width, new_area_height;
+	if(!main_area_calculate_ideal_size(&new_area_width, &new_area_height)) {
 		return;
 	}
 
 	GdkGeometry hints;
 	if(option_enforce_window_aspect_ratio) {
 #if GTK_MAJOR_VERSION >= 3
-		hints.min_aspect = hints.max_aspect = new_window_width * 1.0 / new_window_height;
+		hints.min_aspect = hints.max_aspect = new_area_width * 1.0 / (new_area_height + status_bar_height);
 #else
 		// Fix for issue #57: Some WMs calculate aspect ratios slightly different
 		// than GTK 2, resulting in an off-by-1px result for gtk_window_resize(),
@@ -2139,7 +2142,7 @@ void main_window_adjust_for_image() {/*{{{*/
 #endif
 	}
 
-	if(main_window_width >= 0 && (main_window_width != new_window_width || main_window_height != new_window_height || requested_main_window_width != -1)) {
+	if(main_area_width >= 0 && (main_area_width != new_area_width || main_area_height != new_area_height || requested_main_window_width != -1)) {
 		if(option_recreate_window && main_window_visible) {
 			recreate_window();
 		}
@@ -2171,14 +2174,15 @@ void main_window_adjust_for_image() {/*{{{*/
 			requested_main_window_resize_pos_callback_id = g_timeout_add(500, main_window_reset_pos_callback, NULL);
 		}
 		if(!main_window_visible) {
-			gtk_window_set_default_size(main_window, new_window_width / screen_scale_factor, new_window_height / screen_scale_factor);
+			main_area_width = new_area_width;
+			main_area_height = new_area_height;
+			requested_main_window_width = new_area_width;
+			requested_main_window_height = new_area_height + status_bar_height;
+
+			gtk_window_set_default_size(main_window, new_area_width / screen_scale_factor, new_area_height / screen_scale_factor);
 			if(option_enforce_window_aspect_ratio) {
 				gtk_window_set_geometry_hints(main_window, NULL, &hints, GDK_HINT_ASPECT);
 			}
-			main_window_width = new_window_width;
-			main_window_height = new_window_height;
-			requested_main_window_width = new_window_width;
-			requested_main_window_height = new_window_height;
 
 			// Some window managers create a race here upon application startup:
 			// They resize, as requested above, and afterwards apply their idea of
@@ -2188,20 +2192,20 @@ void main_window_adjust_for_image() {/*{{{*/
 		}
 		else {
 			// Required to avoid tearing
-			window_prerender_background_pixmap(new_window_width, new_window_height, current_scale_level, main_window_in_fullscreen);
+			prerender_background_pixmap(new_area_width, new_area_height, current_scale_level, main_window_in_fullscreen);
 
-			requested_main_window_width = new_window_width;
-			requested_main_window_height = new_window_height;
+			requested_main_window_width = new_area_width;
+			requested_main_window_height = new_area_height + status_bar_height;
 			if(option_enforce_window_aspect_ratio) {
 				gtk_window_set_geometry_hints(main_window, NULL, &hints, GDK_HINT_ASPECT);
 			}
 
-			gtk_window_resize(main_window, new_window_width / screen_scale_factor, new_window_height / screen_scale_factor);
+			gtk_window_resize(main_window, requested_main_window_width / screen_scale_factor, requested_main_window_height / screen_scale_factor);
 #if GTK_MAJOR_VERSION < 3
 			if(option_enforce_window_aspect_ratio) {
 				int image_width, image_height;
 				calculate_current_image_transformed_size(&image_width, &image_height);
-				hints.min_aspect = hints.max_aspect = image_width * 1.0 / image_height;
+				hints.min_aspect = hints.max_aspect = image_width * 1.0 / (image_height + status_bar_height);
 				gtk_window_set_geometry_hints(main_window, NULL, &hints, GDK_HINT_ASPECT);
 			}
 #endif
@@ -2225,7 +2229,7 @@ gboolean image_loaded_handler(gconstpointer node) {/*{{{*/
 	if(node != NULL && node != current_file_node) {
 #ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
 		if(application_mode == MONTAGE) {
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 		}
 #endif
 		return FALSE;
@@ -2938,7 +2942,7 @@ void preload_adjacent_images() {/*{{{*/
 gboolean absolute_image_movement_still_unloaded_timer_callback(gpointer user_data) {/*{{{*/
 	if(user_data == (void *)current_file_node && !CURRENT_FILE->is_loaded) {
 		update_info_text(NULL);
-		gtk_widget_queue_draw(GTK_WIDGET(main_window));
+		gtk_widget_queue_draw(GTK_WIDGET(main_area));
 	}
 	return FALSE;
 }/*}}}*/
@@ -3256,7 +3260,7 @@ void relative_image_movement(ptrdiff_t movement) {/*{{{*/
 		montage_window_control.selected_node = target;
 		montage_window_move_cursor(0, 0,  0);
 		D_UNLOCK(file_tree);
-		gtk_widget_queue_draw(GTK_WIDGET(main_window));
+		gtk_widget_queue_draw(GTK_WIDGET(main_area));
 		return;
 	}
 	#endif
@@ -3418,7 +3422,7 @@ void transform_current_image(cairo_matrix_t *transformation) {/*{{{*/
 	}
 	main_window_adjust_for_image();
 
-	gtk_widget_queue_draw(GTK_WIDGET(main_window));
+	gtk_widget_queue_draw(GTK_WIDGET(main_area));
 }/*}}}*/
 #ifndef CONFIGURED_WITHOUT_EXTERNAL_COMMANDS /* option --without-external-commands: Do not include support for calling external programs */
 gchar *apply_external_image_filter_prepare_command(gchar *command) { /*{{{*/
@@ -3717,7 +3721,7 @@ gboolean slideshow_timeout_callback(gpointer user_data) {/*{{{*/
 gboolean fading_timeout_callback(gpointer user_data) {/*{{{*/
 	if(fading_initial_time < 0) {
 		// We just started. Leave the image invisible.
-		gtk_widget_queue_draw(GTK_WIDGET(main_window));
+		gtk_widget_queue_draw(GTK_WIDGET(main_area));
 		return TRUE;
 	}
 
@@ -3726,7 +3730,7 @@ gboolean fading_timeout_callback(gpointer user_data) {/*{{{*/
 		new_stage = (new_stage < 0.) ? 0. : ((new_stage > 1.) ? 1. : new_stage);
 		fading_current_alpha_stage = new_stage;
 	}
-	gtk_widget_queue_draw(GTK_WIDGET(main_window));
+	gtk_widget_queue_draw(GTK_WIDGET(main_area));
 	if(fading_current_alpha_stage < 1.) {
 		return TRUE;
 	}
@@ -4148,16 +4152,16 @@ void window_unfullscreen() {/*{{{*/
 }/*}}}*/
 inline void queue_draw() {/*{{{*/
 	if(!current_image_drawn) {
-		gtk_widget_queue_draw(GTK_WIDGET(main_window));
+		gtk_widget_queue_draw(GTK_WIDGET(main_area));
 	}
 }/*}}}*/
 #ifndef CONFIGURED_WITHOUT_INFO_TEXT /* option --without-info-text: Build without support for the info text */
 inline void info_text_queue_redraw() {/*{{{*/
 	if(!option_hide_info_box && main_window_visible) {
-		gtk_widget_queue_draw_area(GTK_WIDGET(main_window),
+		gtk_widget_queue_draw_area(GTK_WIDGET(main_area),
 			current_info_text_bounding_box.x,
 			current_info_text_bounding_box.y,
-			main_window_width - current_info_text_bounding_box.x,
+			main_area_width - current_info_text_bounding_box.x,
 			current_info_text_bounding_box.height
 		);
 	}
@@ -4194,6 +4198,7 @@ void update_info_text(const gchar *action) {/*{{{*/
 			}
 		}
 		gtk_window_set_title(GTK_WINDOW(main_window), "pqiv: No image loaded");
+		gtk_label_set_text(status_bar, current_info_text);
 		D_UNLOCK(file_tree);
 		return;
 	}
@@ -4219,6 +4224,7 @@ void update_info_text(const gchar *action) {/*{{{*/
 			current_info_text = g_strdup_printf("%s (Image is still loading...)", display_name);
 		}
 		gtk_window_set_title(GTK_WINDOW(main_window), "pqiv");
+		gtk_label_set_text(status_bar, current_info_text);
 
 		g_free(file_name);
 		D_UNLOCK(file_tree);
@@ -4239,6 +4245,8 @@ void update_info_text(const gchar *action) {/*{{{*/
 			current_info_text = g_strdup_printf("%s (%s)", current_info_text, action);
 			g_free(old_info_text);
 		}
+
+		gtk_label_set_text(status_bar, current_info_text);
 	}
 
 	// Prepare main window title
@@ -4302,8 +4310,8 @@ gboolean window_close_callback(GtkWidget *object, gpointer user_data) {/*{{{*/
 void calculate_base_draw_pos_and_size(int *image_transform_width, int *image_transform_height, int *x, int *y) {/*{{{*/
 	calculate_current_image_transformed_size(image_transform_width, image_transform_height);
 	if(option_scale != NO_SCALING || main_window_in_fullscreen) {
-		*x = (main_window_width - current_scale_level * *image_transform_width) / 2;
-		*y = (main_window_height - current_scale_level * *image_transform_height) / 2;
+		*x = (main_area_width - current_scale_level * *image_transform_width) / 2;
+		*y = (main_area_height - current_scale_level * *image_transform_height) / 2;
 	}
 	else {
 		// When scaling is disabled always use the upper left corder to avoid
@@ -4313,8 +4321,8 @@ void calculate_base_draw_pos_and_size(int *image_transform_width, int *image_tra
 }/*}}}*/
 #ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
 void montage_window_set_cursor(int pos_x, int pos_y) {/*{{{*/
-	const unsigned n_thumbs_x = main_window_width / (option_thumbnails.width + 10);
-	const unsigned n_thumbs_y = main_window_height / (option_thumbnails.height + 10);
+	const unsigned n_thumbs_x = main_area_width / (option_thumbnails.width + 10);
+	const unsigned n_thumbs_y = main_area_height / (option_thumbnails.height + 10);
 	const size_t number_of_images = (ptrdiff_t)bostree_node_count(file_tree);
 
 	if(!montage_window_control.selected_node) {
@@ -4364,8 +4372,8 @@ gboolean montage_window_get_move_cursor_target(int pos_x, int pos_y, int move_y_
 	   scrolling
 	 */
 
-	const int n_thumbs_x = main_window_width / (option_thumbnails.width + 10);
-	const int n_thumbs_y = main_window_height / (option_thumbnails.height + 10);
+	const int n_thumbs_x = main_area_width / (option_thumbnails.width + 10);
+	const int n_thumbs_y = main_area_height / (option_thumbnails.height + 10);
 	const ptrdiff_t number_of_images = (ptrdiff_t)bostree_node_count(file_tree);
 	const int n_rows_total       = (number_of_images + n_thumbs_x - 1) / n_thumbs_x;
 	const int last_row_n_thumbs  = (number_of_images % n_thumbs_x == 0) ? n_thumbs_x : number_of_images % n_thumbs_x;
@@ -4476,8 +4484,8 @@ gboolean montage_window_get_move_cursor_target(int pos_x, int pos_y, int move_y_
 }/*}}}*/
 void montage_window_move_cursor(int move_x, int move_y, int move_y_pages) {/*{{{*/
 	// Must be called with an active lock.
-	const int n_thumbs_x = main_window_width / (option_thumbnails.width + 10);
-	const int n_thumbs_y = main_window_height / (option_thumbnails.height + 10);
+	const int n_thumbs_x = main_area_width / (option_thumbnails.width + 10);
+	const int n_thumbs_y = main_area_height / (option_thumbnails.height + 10);
 
 	if(n_thumbs_x == 0 || n_thumbs_y == 0) {
 		return;
@@ -4553,8 +4561,8 @@ struct window_draw_thumbnail_montage_show_binding_overlays_data {
 	char *active_prefix;
 };
 void window_draw_thumbnail_montage_show_binding_overlays_looper(gpointer key, gpointer value, gpointer user_data) {/*{{{*/
-	const int n_thumbs_x = main_window_width / (option_thumbnails.width + 10);
-	const int n_thumbs_y = main_window_height / (option_thumbnails.height + 10);
+	const int n_thumbs_x = main_area_width / (option_thumbnails.width + 10);
+	const int n_thumbs_y = main_area_height / (option_thumbnails.height + 10);
 	const ptrdiff_t number_of_images = (ptrdiff_t)bostree_node_count(file_tree);
 	const int n_rows_total       = (number_of_images + n_thumbs_x - 1) / n_thumbs_x;
 	const int last_row_n_thumbs  = (number_of_images % n_thumbs_x == 0) ? n_thumbs_x : number_of_images % n_thumbs_x;
@@ -4659,8 +4667,8 @@ void window_draw_thumbnail_montage_show_binding_overlays_looper(gpointer key, gp
 		cairo_save(cr_arg);
 
 		cairo_translate(cr_arg,
-			(main_window_width  - n_thumbs_x * (option_thumbnails.width + 10)) / 2  + data.current_x * (option_thumbnails.width + 10),
-			(main_window_height - n_thumbs_y * (option_thumbnails.height + 10)) / 2 + data.current_y * (option_thumbnails.height + 10)
+			(main_area_width  - n_thumbs_x * (option_thumbnails.width + 10)) / 2  + data.current_x * (option_thumbnails.width + 10),
+			(main_area_height - n_thumbs_y * (option_thumbnails.height + 10)) / 2 + data.current_y * (option_thumbnails.height + 10)
 		);
 
 		BOSNode *node = bostree_select(file_tree, (montage_window_control.scroll_y + data.current_y) * n_thumbs_x + data.current_x);
@@ -4705,8 +4713,8 @@ gboolean window_draw_thumbnail_montage(cairo_t *cr_arg) {/*{{{*/
 	cairo_restore(cr_arg);
 
 	// Calculate how many thumbnails to draw
-	const unsigned n_thumbs_x = main_window_width / (option_thumbnails.width + 10);
-	const unsigned n_thumbs_y = main_window_height / (option_thumbnails.height + 10);
+	const unsigned n_thumbs_x = main_area_width / (option_thumbnails.width + 10);
+	const unsigned n_thumbs_y = main_area_height / (option_thumbnails.height + 10);
 	size_t top_left_id = montage_window_control.scroll_y * n_thumbs_x;
 
 	BOSNode *selected_node = bostree_node_weak_unref(file_tree, bostree_node_weak_ref(montage_window_control.selected_node));
@@ -4739,8 +4747,8 @@ gboolean window_draw_thumbnail_montage(cairo_t *cr_arg) {/*{{{*/
 		/*/ Debug: Draw a red box around the thumbnail box
 		cairo_save(cr_arg);
 		cairo_translate(cr_arg,
-			(main_window_width - n_thumbs_x * (option_thumbnails.width + 10)) / 2   + (draw_now % n_thumbs_x) * (option_thumbnails.width + 10),
-			(main_window_height - n_thumbs_y * (option_thumbnails.height + 10)) / 2 + (draw_now / n_thumbs_x) * (option_thumbnails.height + 10)
+			(main_area_width - n_thumbs_x * (option_thumbnails.width + 10)) / 2   + (draw_now % n_thumbs_x) * (option_thumbnails.width + 10),
+			(main_area_height - n_thumbs_y * (option_thumbnails.height + 10)) / 2 + (draw_now / n_thumbs_x) * (option_thumbnails.height + 10)
 		);
 		cairo_set_source_rgb(cr_arg, 1., 0, 0);
 		cairo_rectangle(cr_arg, 0, 0, option_thumbnails.width + 10, option_thumbnails.height + 10);
@@ -4750,8 +4758,8 @@ gboolean window_draw_thumbnail_montage(cairo_t *cr_arg) {/*{{{*/
 		if(thumb_file->thumbnail) {
 			cairo_save(cr_arg);
 			cairo_translate(cr_arg,
-				(main_window_width - n_thumbs_x * (option_thumbnails.width + 10)) / 2   + (draw_now % n_thumbs_x) * (option_thumbnails.width + 10)  + (option_thumbnails.width + 10 - cairo_image_surface_get_width(thumb_file->thumbnail))/2,
-				(main_window_height - n_thumbs_y * (option_thumbnails.height + 10)) / 2 + (draw_now / n_thumbs_x) * (option_thumbnails.height + 10) + (option_thumbnails.height + 10 - cairo_image_surface_get_height(thumb_file->thumbnail))/2
+				(main_area_width - n_thumbs_x * (option_thumbnails.width + 10)) / 2   + (draw_now % n_thumbs_x) * (option_thumbnails.width + 10)  + (option_thumbnails.width + 10 - cairo_image_surface_get_width(thumb_file->thumbnail))/2,
+				(main_area_height - n_thumbs_y * (option_thumbnails.height + 10)) / 2 + (draw_now / n_thumbs_x) * (option_thumbnails.height + 10) + (option_thumbnails.height + 10 - cairo_image_surface_get_height(thumb_file->thumbnail))/2
 			);
 			cairo_set_source_surface(cr_arg, thumb_file->thumbnail, 0, 0);
 			cairo_new_path(cr_arg);
@@ -4772,8 +4780,8 @@ gboolean window_draw_thumbnail_montage(cairo_t *cr_arg) {/*{{{*/
 		else if(top_left_id + draw_now == selection_rank) {
 			cairo_save(cr_arg);
 			cairo_translate(cr_arg,
-				(main_window_width - n_thumbs_x * (option_thumbnails.width + 10)) / 2   + (draw_now % n_thumbs_x) * (option_thumbnails.width + 10) + (option_thumbnails.width - 5)/2,
-				(main_window_height - n_thumbs_y * (option_thumbnails.height + 10)) / 2 + (draw_now / n_thumbs_x) * (option_thumbnails.height + 10) + (option_thumbnails.height - 5)/2
+				(main_area_width - n_thumbs_x * (option_thumbnails.width + 10)) / 2   + (draw_now % n_thumbs_x) * (option_thumbnails.width + 10) + (option_thumbnails.width - 5)/2,
+				(main_area_height - n_thumbs_y * (option_thumbnails.height + 10)) / 2 + (draw_now / n_thumbs_x) * (option_thumbnails.height + 10) + (option_thumbnails.height - 5)/2
 			);
 			cairo_rectangle(cr_arg, 0, 0, 5, 5);
 			cairo_set_source_rgb(cr_arg, option_box_colors.bg_red, option_box_colors.bg_green, option_box_colors.bg_blue);
@@ -4831,7 +4839,7 @@ void window_clear_background_pixmap() {/*{{{*/
 		XSetWindowBackground(display, window_xid, 0);
 	#endif
 }/*}}}*/
-void window_prerender_background_pixmap(int window_width, int window_height, double scale_level, gboolean fullscreen) {/*{{{*/
+void prerender_background_pixmap(int area_width, int area_height, double scale_level, gboolean fullscreen) {/*{{{*/
 	/*
 		This function is for old X11 environments that do not support
 		moveresize. One will typically see tearing effects there, because the
@@ -4877,7 +4885,7 @@ void window_prerender_background_pixmap(int window_width, int window_height, dou
 			return;
 		}
 
-		if(main_window_width == window_width && main_window_height == window_height) {
+		if(main_area_width == area_width && main_area_height == area_height) {
 			// There will be no tearing, do nothing.
 			XSetWindowBackground(display, window_xid, 0);
 			return;
@@ -4888,18 +4896,20 @@ void window_prerender_background_pixmap(int window_width, int window_height, dou
 			// Failure, abort.
 			return;
 		}
-		const Screen *xscreen = window_attributes.screen;
+		/* const Screen *xscreen = window_attributes.screen;
 		XVisualInfo visual_info_template = { .visualid = window_attributes.visual->visualid };
 		int visual_infos_found;
 		XVisualInfo *visual_info = XGetVisualInfo(display, VisualIDMask, &visual_info_template, &visual_infos_found);
 		Pixmap pixmap = XCreatePixmap(display, window_xid, window_width * screen_scale_factor, window_height * screen_scale_factor, visual_info ? visual_info->depth : xscreen->root_depth);
-		cairo_surface_t *pixmap_surface = cairo_xlib_surface_create(display, pixmap, window_attributes.visual, window_width * screen_scale_factor, window_height * screen_scale_factor);
+		cairo_surface_t *pixmap_surface = cairo_xlib_surface_create(display, pixmap, window_attributes.visual, window_width * screen_scale_factor, window_height * screen_scale_factor); */
+		Pixmap pixmap = XCreatePixmap(display, window_xid, area_width * screen_scale_factor, area_height * screen_scale_factor, window_attributes.visual->bits_per_rgb * (3 + !!option_transparent_background));
+		cairo_surface_t *pixmap_surface = cairo_xlib_surface_create(display, pixmap, window_attributes.visual, area_width * screen_scale_factor, area_height * screen_scale_factor);
 
-		int ow = main_window_width, oh = main_window_height;
+		int ow = main_area_width, oh = main_area_height;
 		double osl = current_scale_level;
 		gboolean ofs = main_window_in_fullscreen;
-		main_window_width = window_width;
-		main_window_height = window_height;
+		main_area_width = area_width;
+		main_area_height = area_height;
 		current_scale_level = scale_level;
 		main_window_in_fullscreen = fullscreen;
 		#ifndef CONFIGURED_WITHOUT_INFO_TEXT
@@ -4909,7 +4919,7 @@ void window_prerender_background_pixmap(int window_width, int window_height, dou
 		cairo_t *cr = cairo_create(pixmap_surface);
 		cairo_save(cr);
 		cairo_scale(cr, screen_scale_factor, screen_scale_factor);
-		window_draw_callback(GTK_WIDGET(main_window), cr, GUINT_TO_POINTER(1));
+		main_area_draw_callback(GTK_WIDGET(main_area), cr, GUINT_TO_POINTER(1));
 		cairo_restore(cr);
 		/*cairo_set_source_rgba(cr, 1., 0, 0, .5);
 		cairo_set_operator(cr, CAIRO_OPERATOR_OVERLAY);
@@ -4917,8 +4927,8 @@ void window_prerender_background_pixmap(int window_width, int window_height, dou
 		cairo_surface_flush(cairo_get_target(cr));
 		cairo_destroy(cr);
 
-		main_window_width = ow;
-		main_window_height = oh;
+		main_area_width = ow;
+		main_area_height = oh;
 		current_scale_level = osl;
 		main_window_in_fullscreen = ofs;
 		#ifndef CONFIGURED_WITHOUT_INFO_TEXT
@@ -4957,10 +4967,21 @@ gboolean window_show_background_pixmap_cb(gpointer user_data) {/*{{{*/
 
 	return FALSE;
 }/*}}}*/
-gboolean window_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_data) {/*{{{*/
-	// Drawing can generally mean that we succeeded in performing some action.
-	// Resume the action queue
-	action_done();
+gboolean main_area_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_data) {/*{{{*/
+	// Continue an action chain, if one exists The placement of this is a
+	// compromise: What we really want is to perform actions that follow an
+	// action that changes the current file only after the change has been
+	// performed. image_loaded_handler() is the natural place to do this. But
+	// the window hasn't been adjusted to its final size there, so any action
+	// that aligns the image would fail. The configure event would be the next
+	// obvious place, but tiling WMs never send one, because they do not honor
+	// the resize request. Hence this place: The new image will always be drawn
+	// eventually. Performing the action inline here rather than just adding
+	// it as an idle callback is to prevent the image from flickering in its
+	// initial position.
+	if(is_current_file_loaded()) {
+		continue_active_input_event_action_chain();
+	}
 
 	// We have different drawing modes. The default, below, is to draw a single
 	// image.
@@ -4997,7 +5018,7 @@ gboolean window_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_
 		// The temporary surface contains the image as it is displayed on the
 		// screen later, with all transformations applied.
 
-		cairo_surface_t *temporary_surface = cairo_surface_create_similar(cairo_get_target(cr_arg), CAIRO_CONTENT_COLOR_ALPHA, main_window_width, main_window_height);
+		cairo_surface_t *temporary_surface = cairo_surface_create_similar(cairo_get_target(cr_arg), CAIRO_CONTENT_COLOR_ALPHA, main_area_width, main_area_height);
 		cairo_t *cr = NULL;
 		if(cairo_surface_status(temporary_surface) != CAIRO_STATUS_SUCCESS) {
 			// This image is too large to be rendered into a temorary image surface
@@ -5135,8 +5156,8 @@ gboolean window_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_
 			}
 			if(!option_lowmem || option_fading) {
 				last_visible_surface = temporary_surface;
-				last_visible_surface_width = main_window_width;
-				last_visible_surface_height = main_window_height;
+				last_visible_surface_width = main_area_width;
+				last_visible_surface_height = main_area_height;
 			}
 			else {
 				cairo_surface_destroy(temporary_surface);
@@ -5167,7 +5188,7 @@ gboolean window_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_
 			// TODO An overall neater solution would be to have
 			// last_visible_surface store only the image part, and do the
 			// centering here.
-			if(last_visible_surface_width != main_window_width || last_visible_surface_height != main_window_height) {
+			if(last_visible_surface_width != main_area_width || last_visible_surface_height != main_area_height) {
 				cairo_surface_destroy(last_visible_surface);
 				last_visible_surface = NULL;
 			}
@@ -5218,7 +5239,7 @@ gboolean window_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_
 			cairo_text_path(cr_arg, current_info_text);
 			cairo_path_extents(cr_arg, &x1, &y1, &x2, &y2);
 
-			if(x2 > main_window_width - 10 * screen_scale_factor && !main_window_in_fullscreen) {
+			if(x2 > main_area_width - 10 * screen_scale_factor && !main_window_in_fullscreen) {
 				cairo_new_path(cr_arg);
 				cairo_restore(cr_arg);
 				cairo_save(cr_arg);
@@ -5259,9 +5280,9 @@ gboolean window_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_
 	return TRUE;
 }/*}}}*/
 #if GTK_MAJOR_VERSION < 3
-	gboolean window_expose_callback(GtkWidget *widget, GdkEvent *event, gpointer user_data) {/*{{{*/
+	gboolean main_area_expose_callback(GtkWidget *widget, GdkEvent *event, gpointer user_data) {/*{{{*/
 		cairo_t *cr = gdk_cairo_create(widget->window);
-		window_draw_callback(widget, cr, user_data);
+		main_area_draw_callback(widget, cr, user_data);
 		cairo_destroy(cr);
 		return TRUE;
 	}/*}}}*/
@@ -5324,7 +5345,7 @@ double calculate_auto_scale_level_for_screen(int image_width, int image_height) 
 				scale_level = fmin(scale_to_fit_size.width * 1. / image_width, scale_to_fit_size.height * 1. / image_height);
 			}
 			else if(option_scale == SCALE_TO_FIT_WINDOW) {
-				scale_level = fmin(main_window_width * 1. / image_width, main_window_height * 1. / image_height);
+				scale_level = fmin(main_area_width * 1. / image_width, main_area_height * 1. / image_height);
 			}
 			else if(option_scale == AUTO_SCALEDOWN && image_width > screen_width * option_scale_screen_fraction) {
 				// Scale down to screen size
@@ -5375,7 +5396,7 @@ void set_scale_level_to_fit() {/*{{{*/
 		int image_width, image_height;
 		calculate_current_image_transformed_size(&image_width, &image_height);
 
-		double new_scale_level = calculate_scale_level_to_fit(image_width, image_height, main_window_width, main_window_height);
+		double new_scale_level = calculate_scale_level_to_fit(image_width, image_height, main_area_width, main_area_height);
 
 		if(fabs(new_scale_level - current_scale_level) > DBL_EPSILON) {
 			current_scale_level = new_scale_level;
@@ -5502,14 +5523,14 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			if(!main_window_visible) return;
 			if(!is_current_file_loaded()) return;
 			current_shift_y += parameter.pint;
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			update_info_text(NULL);
 			break;
 
 		case ACTION_SHIFT_X:
 			if(!is_current_file_loaded()) return;
 			current_shift_x += parameter.pint;
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			update_info_text(NULL);
 			break;
 
@@ -5546,17 +5567,19 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			image_generate_prerendered_view(CURRENT_FILE, FALSE, current_scale_level);
 			current_image_drawn = FALSE;
 			if(main_window_in_fullscreen) {
-				gtk_widget_queue_draw(GTK_WIDGET(main_window));
+				gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			}
 			else {
-				int image_width, image_height;
+				int image_width, image_height, new_area_width, new_area_height;
 				calculate_current_image_transformed_size(&image_width, &image_height);
 
 				// Required to avoid tearing
-				requested_main_window_width = current_scale_level * image_width;
-				requested_main_window_height = current_scale_level * image_height;
-				window_prerender_background_pixmap(requested_main_window_width, requested_main_window_height, current_scale_level, main_window_in_fullscreen);
-				gtk_window_resize(main_window, current_scale_level * image_width / screen_scale_factor, current_scale_level * image_height / screen_scale_factor);
+				new_area_width = current_scale_level * image_width;
+				new_area_height = current_scale_level * image_height;
+				requested_main_window_width = new_area_width;
+				requested_main_window_height = new_area_height + status_bar_height;
+				prerender_background_pixmap(new_area_width, new_area_height, current_scale_level, main_window_in_fullscreen);
+				gtk_window_resize(main_window, requested_main_window_width / screen_scale_factor, requested_main_window_height / screen_scale_factor);
 				if(!wm_supports_moveresize) {
 					queue_draw();
 				}
@@ -5581,7 +5604,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			invalidate_current_scaled_image_surface();
 			set_scale_level_for_screen();
 			main_window_adjust_for_image();
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			switch(option_scale) {
 				case NO_SCALING: update_info_text("Scaling disabled"); break;
 				case AUTO_SCALEDOWN: update_info_text("Automatic scaledown enabled"); break;
@@ -5607,7 +5630,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			image_generate_prerendered_view(CURRENT_FILE, FALSE, -1);
 			set_scale_level_for_screen();
 			main_window_adjust_for_image();
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 		case ACTION_TOGGLE_SHUFFLE_MODE:
@@ -5641,7 +5664,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			image_generate_prerendered_view(CURRENT_FILE, FALSE, -1);
 			set_scale_level_for_screen();
 			main_window_adjust_for_image();
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			update_info_text(NULL);
 			break;
 
@@ -5707,7 +5730,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 		case ACTION_TOGGLE_INFO_BOX:
 			option_hide_info_box = !option_hide_info_box;
 			update_info_text(NULL);
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 #endif
 
@@ -5737,7 +5760,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 		case ACTION_HARDLINK_CURRENT_IMAGE:
 			if(!is_current_file_loaded()) return;
 			hardlink_current_image();
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 		case ACTION_GOTO_DIRECTORY_RELATIVE:
@@ -5796,7 +5819,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 				else {
 					UPDATE_INFO_TEXT("Executing command %s", command);
 					info_text_queue_redraw();
-					gtk_widget_queue_draw(GTK_WIDGET(main_window));
+					gtk_widget_queue_draw(GTK_WIDGET(main_area));
 
 					command = g_strdup(command);
 
@@ -5842,13 +5865,13 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 							montage_window_control.selected_node = node;
 							montage_window_move_cursor(0, 0,  0);
 							D_UNLOCK(file_tree);
-							gtk_widget_queue_draw(GTK_WIDGET(main_window));
+							gtk_widget_queue_draw(GTK_WIDGET(main_area));
 						}
 						#endif
 					}
 					else {
 						remove_image(node);
-						gtk_widget_queue_draw(GTK_WIDGET(main_window));
+						gtk_widget_queue_draw(GTK_WIDGET(main_area));
 					}
 				}
 			}
@@ -5883,13 +5906,13 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 							montage_window_control.selected_node = node;
 							montage_window_move_cursor(0, 0, 0);
 							D_UNLOCK(file_tree);
-							gtk_widget_queue_draw(GTK_WIDGET(main_window));
+							gtk_widget_queue_draw(GTK_WIDGET(main_area));
 						}
 						#endif
 					}
 					else {
 						remove_image(node);
-						gtk_widget_queue_draw(GTK_WIDGET(main_window));
+						gtk_widget_queue_draw(GTK_WIDGET(main_area));
 					}
 				}
 			}
@@ -5931,20 +5954,20 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			set_scale_level_for_screen();
 			main_window_adjust_for_image();
 			UPDATE_INFO_TEXT("Scale level adjusted to fit %dx%d px", scale_to_fit_size.width, scale_to_fit_size.height);
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 		case ACTION_SET_SHIFT_X:
 			if(!is_current_file_loaded()) return;
 			current_shift_x = parameter.pint;
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			update_info_text(NULL);
 			break;
 
 		case ACTION_SET_SHIFT_Y:
 			if(!is_current_file_loaded()) return;
 			current_shift_y = parameter.pint;
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			update_info_text(NULL);
 			break;
 
@@ -5975,29 +5998,29 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 							current_shift_y = 0;
 							break;
 						case 'N':
-							if(flags == 0 || image_height > main_window_height) {
+							if(flags == 0 || image_height > main_area_height) {
 								current_shift_y = -y;
 							}
 							break;
 						case 'S':
-							if(flags == 0 || image_height > main_window_height) {
-								current_shift_y = -y - image_height + main_window_height;
+							if(flags == 0 || image_height > main_area_height) {
+								current_shift_y = -y - image_height + main_area_height;
 							}
 							break;
 						case 'E':
-							if(flags == 0 || image_width > main_window_width) {
-								current_shift_x = -x - image_width + main_window_width;
+							if(flags == 0 || image_width > main_area_width) {
+								current_shift_x = -x - image_width + main_area_width;
 							}
 							break;
 						case 'W':
-							if(flags == 0 || image_width > main_window_width) {
+							if(flags == 0 || image_width > main_area_width) {
 								current_shift_x = -x;
 							}
 							break;
 					}
 				}
 
-				gtk_widget_queue_draw(GTK_WIDGET(main_window));
+				gtk_widget_queue_draw(GTK_WIDGET(main_area));
 				update_info_text(NULL);
 			}
 			break;
@@ -6031,7 +6054,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			}
 
 			invalidate_current_scaled_image_surface();
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 		case ACTION_ANIMATION_STEP:
@@ -6142,7 +6165,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 				D_LOCK(file_tree);
 				montage_window_move_cursor(0, 0, 0);
 				D_UNLOCK(file_tree);
-				gtk_widget_queue_draw(GTK_WIDGET(main_window));
+				gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			}
 			break;
 
@@ -6187,8 +6210,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			main_window_adjust_for_image();
 			set_cursor_auto_hide_mode(TRUE);
 
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
-			return;
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 		case ACTION_MONTAGE_MODE_SHIFT_X:
@@ -6198,7 +6220,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			D_LOCK(file_tree);
 			montage_window_move_cursor(parameter.pint, 0, 0);
 			D_UNLOCK(file_tree);
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 		case ACTION_MONTAGE_MODE_SHIFT_Y:
@@ -6208,7 +6230,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			D_LOCK(file_tree);
 			montage_window_move_cursor(0, parameter.pint, 0);
 			D_UNLOCK(file_tree);
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 		case ACTION_MONTAGE_MODE_SET_WRAP_MODE:
@@ -6224,7 +6246,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 				break;
 			}
 			montage_window_set_cursor(parameter.pint, -1);
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 		case ACTION_MONTAGE_MODE_SET_SHIFT_Y:
@@ -6232,7 +6254,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 				break;
 			}
 			montage_window_set_cursor(-1, parameter.pint);
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 		case ACTION_MONTAGE_MODE_SHIFT_Y_PG:
@@ -6242,12 +6264,12 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			D_LOCK(file_tree);
 			montage_window_move_cursor(0, 0, parameter.pint);
 			D_UNLOCK(file_tree);
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 		case ACTION_MONTAGE_MODE_SHOW_BINDING_OVERLAYS:
 			montage_window_control.show_binding_overlays = !!parameter.pint;
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 #ifndef CONFIGURED_WITHOUT_ACTIONS
@@ -6270,8 +6292,8 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			follow_mode_key_binding.next_key_bindings = g_hash_table_new_full((GHashFunc)g_direct_hash, (GEqualFunc)g_direct_equal, NULL, key_binding_t_destroy_callback);
 
 			{
-				const int n_thumbs_x = main_window_width / (option_thumbnails.width + 10);
-				const int n_thumbs_y = main_window_height / (option_thumbnails.height + 10);
+				const int n_thumbs_x = main_area_width / (option_thumbnails.width + 10);
+				const int n_thumbs_y = main_area_height / (option_thumbnails.height + 10);
 				const ptrdiff_t number_of_images = (ptrdiff_t)bostree_node_count(file_tree);
 				const ptrdiff_t visible_thumbnails = ((montage_window_control.scroll_y + n_thumbs_y) * n_thumbs_x > number_of_images ? number_of_images - montage_window_control.scroll_y * n_thumbs_x : n_thumbs_x * n_thumbs_y);
 				const int number_of_characters = strlen(parameter.pcharptr);
@@ -6404,7 +6426,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			active_key_binding.associated_image = current_file_node;
 			active_key_binding.timeout_id = gdk_threads_add_timeout((size_t)(option_keyboard_timeout * 1000), handle_input_event_timeout_callback, NULL);
 
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 
 			return;
 			break;
@@ -6418,7 +6440,12 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			if(parameter.p2short.p1 >= 0 || parameter.p2short.p2 >= 0) {
 				montage_window_set_cursor(parameter.p2short.p1, parameter.p2short.p2);
 			}
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
+			// If we have an action chain to continue, do that *now*, because we will
+			// unreference the pointer in the next line.
+			while(active_key_binding.key_binding) {
+				continue_active_input_event_action_chain();
+			}
 			if(follow_mode_key_binding.next_key_bindings) {
 				g_hash_table_unref(follow_mode_key_binding.next_key_bindings);
 				follow_mode_key_binding.next_key_bindings = NULL;
@@ -6436,7 +6463,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			application_mode = DEFAULT;
 			active_key_binding_context = DEFAULT;
 			main_window_adjust_for_image();
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			if(main_window_in_fullscreen) {
 				window_hide_cursor();
 				set_cursor_auto_hide_mode(FALSE);
@@ -6492,10 +6519,10 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 		case ACTION_MOVE_WINDOW:
 			if(!main_window_in_fullscreen) {
 				if(parameter.p2short.p1 < 0) {
-					parameter.p2short.p1 = screen_geometry.x + (screen_geometry.width - main_window_width) / 2;
+					parameter.p2short.p1 = screen_geometry.x + (screen_geometry.width - main_area_width) / 2;
 				}
 				if(parameter.p2short.p2 < 0) {
-					parameter.p2short.p2 = screen_geometry.y + (screen_geometry.height - main_window_height) / 2;
+					parameter.p2short.p2 = screen_geometry.y + (screen_geometry.height - main_area_height) / 2;
 				}
 				gtk_window_move(main_window, parameter.p2short.p1, parameter.p2short.p2);
 			}
@@ -6514,7 +6541,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			UPDATE_INFO_TEXT("Background pattern set to %s", option_background_pattern == BLACK ? "black" :
 															 option_background_pattern == WHITE ? "white" :
 															 "checkerboard");
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 		case ACTION_TOGGLE_NEGATE_MODE:
@@ -6525,7 +6552,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 				option_negate = parameter.pint - 2;
 			}
 			UPDATE_INFO_TEXT("Negate mode %s", option_negate ? "enabled" : "disabled");
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
 #ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
@@ -6542,7 +6569,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			}
 			montage_window_move_cursor(0, 0, 0);
 			D_UNLOCK(file_tree);
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 #endif // without montage
 
@@ -6595,7 +6622,7 @@ gboolean window_configure_callback(GtkWidget *widget, GdkEventConfigure *event, 
 		requested_main_window_width = -1;
 	}
 
-	if(wm_ignores_size_requests || (main_window_width != event->width || main_window_height != event->height)) {
+	if(wm_ignores_size_requests || (main_area_width != event->width || main_area_height != event->height)) {
 		// Reset cached font size for info text
 		#ifndef CONFIGURED_WITHOUT_INFO_TEXT
 			current_info_text_cached_font_size = -1;
@@ -6603,22 +6630,22 @@ gboolean window_configure_callback(GtkWidget *widget, GdkEventConfigure *event, 
 
 		// Update window size
 		if(main_window_in_fullscreen) {
-			main_window_width = screen_geometry.width;
-			main_window_height = screen_geometry.height;
+			main_area_width = screen_geometry.width;
+			main_area_height = screen_geometry.height - status_bar_height;
 		}
 		else {
-			main_window_width = event->width;
-			main_window_height = event->height;
+			main_area_width = event->width;
+			main_area_height = event->height - status_bar_height;
 		}
 
 		// If the fullscreen state just changed execute the post-change callbacks here
 		if(fullscreen_transition_source_id >= 0) {
 			g_source_remove(fullscreen_transition_source_id);
 			if(main_window_in_fullscreen) {
-				window_state_into_fullscreen_actions(main_window);
+				window_state_into_fullscreen_actions(main_area);
 			}
 			else {
-				window_state_out_of_fullscreen_actions(main_window);
+				window_state_out_of_fullscreen_actions(main_area);
 			}
 		}
 
@@ -6630,7 +6657,7 @@ gboolean window_configure_callback(GtkWidget *widget, GdkEventConfigure *event, 
 
 		// We need to redraw in old GTK versions to avoid artifacts
 		#if GTK_MAJOR_VERSION < 3
-			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 		#endif
 	}
 
@@ -6715,7 +6742,7 @@ void handle_input_event(guint key_binding_value) {/*{{{*/
 
 			#ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
 			if(application_mode == MONTAGE && montage_window_control.show_binding_overlays) {
-				gtk_widget_queue_draw(GTK_WIDGET(main_window));
+				gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			}
 			#endif
 		}
@@ -6857,7 +6884,7 @@ gboolean window_motion_notify_callback(GtkWidget *widget, GdkEventMotion *event,
 			invalidate_current_scaled_image_surface();
 		}
 
-		gtk_widget_queue_draw(GTK_WIDGET(main_window));
+		gtk_widget_queue_draw(GTK_WIDGET(main_area));
 		window_center_mouse();
 	}
 
@@ -6878,13 +6905,13 @@ gboolean window_button_press_callback(GtkWidget *widget, GdkEventButton *event, 
 		// Thumbnails are drawn such that the whole mosaique is centered. Undo
 		// that to find the correct index.
 		//
-		event->x -= (main_window_width % (option_thumbnails.width + 10)) / 2;
-		event->y -= (main_window_height % (option_thumbnails.height + 10)) / 2;
+		event->x -= (main_area_width % (option_thumbnails.width + 10)) / 2;
+		event->y -= (main_area_height % (option_thumbnails.height + 10)) / 2;
 		if(event->x < 0) event->x = 0;
 		if(event->y < 0) event->y = 0;
 
 		montage_window_set_cursor((int)(event->x / (option_thumbnails.width + 10)), (int)(event->y / (option_thumbnails.height + 10)));
-		gtk_widget_queue_draw(GTK_WIDGET(main_window));
+		gtk_widget_queue_draw(GTK_WIDGET(main_area));
 		if(event->type == GDK_2BUTTON_PRESS) {
 			pqiv_action_parameter_t empty_param = { .pint = 0 };
 #ifndef CONFIGURED_WITHOUT_ACTIONS
@@ -6980,13 +7007,13 @@ gboolean window_state_into_fullscreen_actions(gpointer user_data) {/*{{{*/
 		update_info_text(NULL);
 	}
 
-	main_window_width = screen_geometry.width;
-	main_window_height = screen_geometry.height;
+	main_area_width = screen_geometry.width;
+	main_area_height = screen_geometry.height;
 
 	set_scale_level_to_fit();
 	invalidate_current_scaled_image_surface();
 	#if GTK_MAJOR_VERSION < 3
-		gtk_widget_queue_draw(GTK_WIDGET(main_window));
+		gtk_widget_queue_draw(GTK_WIDGET(main_area));
 	#endif
 	fullscreen_transition_source_id = -1;
 	action_done();
@@ -7040,29 +7067,29 @@ gboolean window_state_callback(GtkWidget *widget, GdkEventWindowState *event, gp
 		}
 		else {
 			window_state_out_of_fullscreen_actions(NULL);
-			fullscreen_transition_source_id = g_timeout_add(500, window_state_out_of_fullscreen_actions, main_window);
+			fullscreen_transition_source_id = g_timeout_add(500, window_state_out_of_fullscreen_actions, main_area);
 		}
 	}
 
 	return FALSE;
 }/*}}}*/
 void window_screen_activate_rgba() {/*{{{*/
-	GdkScreen *screen = gtk_widget_get_screen(GTK_WIDGET(main_window));
+	GdkScreen *screen = gtk_widget_get_screen(GTK_WIDGET(main_area));
 	#if GTK_MAJOR_VERSION >= 3
 		GdkVisual *visual = gdk_screen_get_rgba_visual(screen);
 		if (visual == NULL) {
 			visual = gdk_screen_get_system_visual(screen);
 		}
-		gtk_widget_set_visual(GTK_WIDGET(main_window), visual);
+		gtk_widget_set_visual(GTK_WIDGET(main_area), visual);
 	#else
-		if(gtk_widget_get_realized(GTK_WIDGET(main_window))) {
+		if(gtk_widget_get_realized(GTK_WIDGET(main_area))) {
 			// In GTK2, this must not happen again after realization
 			return;
 		}
 
 		GdkColormap *colormap = gdk_screen_get_rgba_colormap(screen);
 		if (colormap != NULL) {
-			gtk_widget_set_colormap(GTK_WIDGET(main_window), colormap);
+			gtk_widget_set_colormap(GTK_WIDGET(main_area), colormap);
 		}
 	#endif
 	return;
@@ -7171,6 +7198,17 @@ void window_realize_callback(GtkWidget *widget, gpointer user_data) {/*{{{*/
 		set_cursor_auto_hide_mode(TRUE);
 	}
 }/*}}}*/
+void status_bar_resize_callback(GtkWidget *widget, GdkRectangle *allocation, gpointer user_data) {/*{{{*/
+	int new_height = allocation->height;
+	if(new_height < 0) {
+		new_height = 0;
+	}
+	if(new_height != status_bar_height) {
+		main_area_height += (status_bar_height - new_height);
+		status_bar_height = new_height;
+		gtk_widget_queue_draw(GTK_WIDGET(main_area));
+	}
+}/*}}}*/
 void create_window() { /*{{{*/
 	if(main_window != NULL) {
 		return;
@@ -7184,12 +7222,25 @@ void create_window() { /*{{{*/
 	#endif
 
 	main_window = GTK_WINDOW(gtk_window_new(GTK_WINDOW_TOPLEVEL));
+	main_area = GTK_DRAWING_AREA(gtk_drawing_area_new());
+	GtkWidget *box;
+	#if GTK_MAJOR_VERSION < 3
+		box = gtk_vbox_new(FALSE, 0);
+	#else
+		box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	#endif
+	status_bar = GTK_LABEL(gtk_label_new(NULL));
+	gtk_widget_set_halign(GTK_WIDGET(status_bar), GTK_ALIGN_START);
+	gtk_label_set_use_markup(status_bar, TRUE);
+	gtk_box_pack_start(GTK_BOX(box), GTK_WIDGET(main_area), TRUE, TRUE, 0);
+	gtk_box_pack_start(GTK_BOX(box), GTK_WIDGET(status_bar), FALSE, FALSE, 0);
+	gtk_container_add(GTK_CONTAINER(main_window), GTK_WIDGET(box));
 
 	g_signal_connect(main_window, "destroy", G_CALLBACK(window_close_callback), NULL);
 	#if GTK_MAJOR_VERSION < 3
-		g_signal_connect(main_window, "expose-event", G_CALLBACK(window_expose_callback), NULL);
+		g_signal_connect(main_area, "expose-event", G_CALLBACK(main_area_expose_callback), NULL);
 	#else
-		g_signal_connect(main_window, "draw", G_CALLBACK(window_draw_callback), NULL);
+		g_signal_connect(main_area, "draw", G_CALLBACK(main_area_draw_callback), NULL);
 	#endif
 	g_signal_connect(main_window, "configure-event", G_CALLBACK(window_configure_callback), NULL);
 	g_signal_connect(main_window, "key-press-event", G_CALLBACK(window_key_press_callback), NULL);
@@ -7200,6 +7251,7 @@ void create_window() { /*{{{*/
 	g_signal_connect(main_window, "button-release-event", G_CALLBACK(window_button_release_callback), NULL);
 	g_signal_connect(main_window, "window-state-event", G_CALLBACK(window_state_callback), NULL);
 	g_signal_connect(main_window, "realize", G_CALLBACK(window_realize_callback), NULL);
+	g_signal_connect(status_bar, "size_allocate", G_CALLBACK(status_bar_resize_callback), NULL);
 
 	gtk_widget_set_events(GTK_WIDGET(main_window),
 		GDK_EXPOSURE_MASK | GDK_SCROLL_MASK | GDK_BUTTON_MOTION_MASK |
@@ -7245,9 +7297,9 @@ void create_window() { /*{{{*/
 	}
 
 #if GTK_MAJOR_VERSION < 3
-	gtk_widget_set_double_buffered(GTK_WIDGET(main_window), TRUE);
+	gtk_widget_set_double_buffered(GTK_WIDGET(main_area), TRUE);
 #endif
-	gtk_widget_set_app_paintable(GTK_WIDGET(main_window), TRUE);
+	gtk_widget_set_app_paintable(GTK_WIDGET(main_area), TRUE);
 
 	if(option_transparent_background) {
 		gtk_window_set_decorated(main_window, FALSE);

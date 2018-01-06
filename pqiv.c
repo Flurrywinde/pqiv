@@ -178,6 +178,7 @@ gboolean current_image_drawn = FALSE;
 // Variables related to the window, display, etc.
 GtkDrawingArea *main_area;
 GtkWindow *main_window;
+GtkBox *main_container;
 GtkLabel *status_bar;
 gboolean main_window_visible = FALSE;
 
@@ -291,6 +292,7 @@ gdouble option_slideshow_interval = 5.;
 #ifndef CONFIGURED_WITHOUT_INFO_TEXT
 gboolean option_hide_info_box = FALSE;
 #endif
+gboolean option_hide_status_bar = FALSE;
 gboolean option_start_fullscreen = FALSE;
 gdouble option_initial_scale = 1.0;
 gboolean option_start_with_slideshow_mode = FALSE;
@@ -398,6 +400,7 @@ GOptionEntry options[] = {
 #ifndef CONFIGURED_WITHOUT_INFO_TEXT
 	{ "hide-info-box", 'i', 0, G_OPTION_ARG_NONE, &option_hide_info_box, "Initially hide the info box", NULL },
 #endif
+	{ "hide-status-bar", 'u', 0, G_OPTION_ARG_NONE, &option_hide_status_bar, "Initially hide the status bar", NULL },
 	{ "lazy-load", 'l', 0, G_OPTION_ARG_NONE, &option_lazy_load, "Display the main window as soon as one image is loaded", NULL },
 	{ "sort", 'n', 0, G_OPTION_ARG_NONE, &option_sort, "Sort files in natural order", NULL },
 	{ "window-position", 'P', 0, G_OPTION_ARG_CALLBACK, &option_window_position_callback, "Set initial window position (`x,y' or `off' to not position the window at all)", "POSITION" },
@@ -540,6 +543,7 @@ static const struct default_key_bindings_struct {
 	{ DEFAULT, KEY_BINDING_VALUE(0 , 0                , GDK_KEY_l                ), ACTION_ROTATE_LEFT                     , { 0   }},
 	{ DEFAULT, KEY_BINDING_VALUE(0 , 0                , GDK_KEY_k                ), ACTION_ROTATE_RIGHT                    , { 0   }},
 	{ DEFAULT, KEY_BINDING_VALUE(0 , 0                , GDK_KEY_i                ), ACTION_TOGGLE_INFO_BOX                 , { 0   }},
+	{ DEFAULT, KEY_BINDING_VALUE(0 , 0                , GDK_KEY_u                ), ACTION_TOGGLE_STATUS_BAR               , { 0   }},
 	{ DEFAULT, KEY_BINDING_VALUE(0 , 0                , GDK_KEY_j                ), ACTION_JUMP_DIALOG                     , { 0   }},
 	{ DEFAULT, KEY_BINDING_VALUE(0 , 0                , GDK_KEY_m                ), ACTION_MONTAGE_MODE_ENTER              , { 0   }},
 	{ DEFAULT, KEY_BINDING_VALUE(0 , 0                , GDK_KEY_s                ), ACTION_TOGGLE_SLIDESHOW                , { 0   }},
@@ -653,6 +657,7 @@ const struct pqiv_action_descriptor {
 	{ "rotate_left", PARAMETER_NONE },
 	{ "rotate_right", PARAMETER_NONE },
 	{ "toggle_info_box", PARAMETER_NONE },
+	{ "toggle_status_bar", PARAMETER_NONE },
 	{ "jump_dialog", PARAMETER_NONE },
 	{ "toggle_slideshow", PARAMETER_NONE },
 	{ "hardlink_current_image", PARAMETER_NONE },
@@ -5682,6 +5687,19 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			break;
 #endif
 
+		case ACTION_TOGGLE_STATUS_BAR:
+			option_hide_status_bar = !option_hide_status_bar;
+			if(option_hide_status_bar) {
+				gtk_container_remove(GTK_CONTAINER(main_container), GTK_WIDGET(status_bar));
+				main_area_height += status_bar_height;
+				status_bar_height = 0;
+			} else {
+				gtk_box_pack_start(main_container, GTK_WIDGET(status_bar), FALSE, FALSE, 0);
+				gtk_widget_show(GTK_WIDGET(status_bar));
+			}
+			update_info_text(NULL);
+			break;
+
 #ifndef CONFIGURED_WITHOUT_JUMP_DIALOG
 		case ACTION_JUMP_DIALOG:
 			if(!is_current_file_loaded()) return;
@@ -7161,18 +7179,23 @@ void create_window() { /*{{{*/
 
 	main_window = GTK_WINDOW(gtk_window_new(GTK_WINDOW_TOPLEVEL));
 	main_area = GTK_DRAWING_AREA(gtk_drawing_area_new());
-	GtkWidget *box;
 	#if GTK_MAJOR_VERSION < 3
-		box = gtk_vbox_new(FALSE, 0);
+		main_container = GTK_BOX(gtk_vbox_new(FALSE, 0));
 	#else
-		box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+		main_container = GTK_BOX(gtk_box_new(GTK_ORIENTATION_VERTICAL, 0));
 	#endif
 	status_bar = GTK_LABEL(gtk_label_new(NULL));
+
+	/* Take ownership of the status_bar, so it won't be released on removal from main container */
+	g_object_ref_sink(status_bar);
+
 	gtk_widget_set_halign(GTK_WIDGET(status_bar), GTK_ALIGN_START);
 	gtk_label_set_use_markup(status_bar, TRUE);
-	gtk_box_pack_start(GTK_BOX(box), GTK_WIDGET(main_area), TRUE, TRUE, 0);
-	gtk_box_pack_start(GTK_BOX(box), GTK_WIDGET(status_bar), FALSE, FALSE, 0);
-	gtk_container_add(GTK_CONTAINER(main_window), GTK_WIDGET(box));
+	gtk_container_add(GTK_CONTAINER(main_window), GTK_WIDGET(main_container));
+	gtk_box_pack_start(main_container, GTK_WIDGET(main_area), TRUE, TRUE, 0);
+	if(!option_hide_status_bar) {
+		gtk_box_pack_start(main_container, GTK_WIDGET(status_bar), FALSE, FALSE, 0);
+	}
 
 	g_signal_connect(main_window, "destroy", G_CALLBACK(window_close_callback), NULL);
 	#if GTK_MAJOR_VERSION < 3

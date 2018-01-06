@@ -107,6 +107,8 @@
 
 // Global variables and function signatures {{{
 
+extern char **environ;
+
 // The list of file type handlers and file type initializer function
 void initialize_file_type_handlers(const gchar * const * disabled_backends);
 
@@ -4176,12 +4178,80 @@ inline void info_text_queue_redraw() {/*{{{*/
 		);
 	}
 }/*}}}*/
-gchar *substitute_variables(const gchar *format, const gchar *action, BOSNode *node) {/*{{{*/
+typedef struct {
+	gchar **envp;
+	gsize additional_env_size;
+	const gchar *command;
+	gchar *result;
+	GSourceFunc result_cb;
+} status_command_t;
+gpointer status_command_thread(gpointer cmd_p) {/*{{{*/
+	status_command_t *cmd = (status_command_t*)cmd_p;
+	const gchar *argv[] = {"/bin/sh", "-c", cmd->command, 0};
+	gchar *child_stderr = NULL;
+	GError *err = NULL;
+	if(g_spawn_sync(NULL, (gchar**)argv, cmd->envp, G_SPAWN_DEFAULT, NULL, NULL, &cmd->result, &child_stderr, NULL, &err) == FALSE) {
+		g_printerr("Failed execute external command `%s': %s\n", argv[2], err->message);
+		g_clear_error(&err);
+	}
+	else {
+		g_print("%s", child_stderr);
+		g_free(child_stderr);
+		gdk_threads_add_idle(cmd->result_cb, cmd->result);
+	}
+	cmd->envp[cmd->additional_env_size] = NULL; /* Only free additional env, not original env */
+	g_strfreev(cmd->envp);
+	g_free(cmd);
+	return NULL;
+}/*}}}*/
+void substitute_variables(const gchar *format, const gchar *action, BOSNode *node, GSourceFunc cb) {/*{{{*/
+	file_t *file = FILE(node);
+
+	if(format[0] == '>') {
+		double scale_level = current_scale_level;
+		#ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
+		if(application_mode == MONTAGE) {
+			const double scale_level_w = option_thumbnails.width * 1.0 / file->width;
+			const double scale_level_h = option_thumbnails.height * 1.0 / file->height;
+			scale_level = fmin(1., fmin(scale_level_w, scale_level_h));
+		}
+		#endif
+
+		gchar *base_name = g_path_get_basename(file->file_name);
+		gchar *additional_env[] = {
+			g_strdup_printf("FILENAME=%s", (file->file_flags & FILE_FLAGS_MEMORY_IMAGE) ? "-" : file->file_name),
+			g_strdup_printf("BASEFILENAME=%s", (file->file_flags & FILE_FLAGS_MEMORY_IMAGE) ? "-" : base_name),
+			g_strdup_printf("ACTION=%s", (action == NULL) ? "" : action),
+			g_strdup_printf("WIDTH=%d", file->width),
+			g_strdup_printf("HEIGHT=%d", file->height),
+			g_strdup_printf("ZOOM=%02.2f", scale_level),
+			g_strdup_printf("IMAGE_NUMBER=%d", bostree_rank(node) + 1),
+			g_strdup_printf("IMAGE_COUNT=%d", bostree_node_count(file_tree)),
+			g_strdup_printf("MONTAGE_MODE=%d", application_mode),
+			NULL
+		};
+		g_free(base_name);
+
+		status_command_t *cmd = g_new(status_command_t, 1);
+
+		size_t initial_env_size = g_strv_length(environ);
+		size_t additional_env_size = g_strv_length(additional_env);
+		cmd->envp = g_new0(gchar*, initial_env_size+additional_env_size+1);
+		memcpy(cmd->envp, additional_env, additional_env_size*sizeof(char*));
+		memcpy(cmd->envp + additional_env_size, environ, initial_env_size*sizeof(char*));
+
+		cmd->command = format + 1;
+		cmd->result_cb = cb;
+		cmd->additional_env_size = additional_env_size;
+
+		g_thread_new("status-command", status_command_thread, cmd);
+		return;
+	}
+
 	GString *result = g_string_new(NULL);
 	const char *format_iter = format;
 	const char *temporary_iter;
 	gchar *file_name = NULL;
-	file_t *file = FILE(node);
 	while(*format_iter) {
 		temporary_iter = g_strstr_len(format_iter, -1, "$");
 		if(!temporary_iter) {
@@ -4247,7 +4317,17 @@ gchar *substitute_variables(const gchar *format, const gchar *action, BOSNode *n
 	}
 
 	g_free(file_name);
-	return g_string_free(result, FALSE);
+	cb(g_string_free(result, FALSE));
+}/*}}}*/
+gboolean update_status_bar(gpointer status) {/*{{{*/
+	gtk_label_set_text(status_bar, g_strstrip(status));
+	g_free(status);
+	return FALSE;
+}/*}}}*/
+gboolean update_window_title(gpointer title) {/*{{{*/
+	gtk_window_set_title(main_window, g_strstrip(title));
+	g_free(title);
+	return FALSE;
 }/*}}}*/
 void update_info_text(const gchar *action) {/*{{{*/
 	D_LOCK(file_tree);
@@ -4263,9 +4343,7 @@ void update_info_text(const gchar *action) {/*{{{*/
 		}
 		if(!option_hide_status_bar) {
 			if(montage_window_control.selected_node != NULL && FILE(montage_window_control.selected_node) != NULL) {
-				gchar *new_status = substitute_variables(option_status_bar_text, action, montage_window_control.selected_node);
-				gtk_label_set_text(status_bar, new_status);
-				g_free(new_status);
+				substitute_variables(option_status_bar_text, action, montage_window_control.selected_node, update_status_bar);
 			}
 			else {
 				gtk_label_set_text(status_bar, "Montage mode");
@@ -4336,15 +4414,11 @@ void update_info_text(const gchar *action) {/*{{{*/
 
 	// Update status bar
 	if(!option_hide_status_bar) {
-		gchar *new_status = substitute_variables(option_status_bar_text, action, current_file_node);
-		gtk_label_set_text(status_bar, new_status);
-		g_free(new_status);
+		substitute_variables(option_status_bar_text, action, current_file_node, update_status_bar);
 	}
 
 	// Update main window title
-	gchar *new_window_title = substitute_variables(option_window_title, NULL, current_file_node);
-	gtk_window_set_title(GTK_WINDOW(main_window), new_window_title);
-	g_free(new_window_title);
+	substitute_variables(option_window_title, NULL, current_file_node, update_window_title);
 
 	D_UNLOCK(file_tree);
 }/*}}}*/

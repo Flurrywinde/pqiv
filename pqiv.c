@@ -289,6 +289,7 @@ struct {
 
 gboolean scale_override = FALSE;
 const gchar *option_window_title = "pqiv: $FILENAME ($WIDTHx$HEIGHT) $ZOOM% [$IMAGE_NUMBER/$IMAGE_COUNT]";
+const gchar *option_status_bar_text = "$FILENAME ($WIDTHx$HEIGHT) $ZOOM% [$IMAGE_NUMBER/$IMAGE_COUNT]";
 gdouble option_slideshow_interval = 5.;
 #ifndef CONFIGURED_WITHOUT_INFO_TEXT
 gboolean option_hide_info_box = FALSE;
@@ -409,6 +410,7 @@ GOptionEntry options[] = {
 	{ "slideshow", 's', 0, G_OPTION_ARG_NONE, &option_start_with_slideshow_mode, "Activate slideshow mode", NULL },
 	{ "scale-images-up", 't', G_OPTION_FLAG_NO_ARG, G_OPTION_ARG_CALLBACK, &option_scale_level_callback, "Scale images up to fill the whole screen", NULL },
 	{ "window-title", 'T', 0, G_OPTION_ARG_STRING, &option_window_title, "Set the title of the window. See manpage for available variables.", "TITLE" },
+	{ "status-bar-text", 0, 0, G_OPTION_ARG_STRING, &option_status_bar_text, "Set the format of the status bar. See manpage for available variables.", "TITLE" },
 	{ "zoom-level", 'z', 0, G_OPTION_ARG_DOUBLE, &option_initial_scale, "Set initial zoom level (1.0 is 100%)", "FLOAT" },
 
 #ifndef CONFIGURED_WITHOUT_EXTERNAL_COMMANDS
@@ -1442,6 +1444,7 @@ BOSNode *load_images_handle_parameter_add_file(load_images_state_t state, file_t
 			D_LOCK(file_tree);
 			montage_window_move_cursor(0, 0,  0);
 			D_UNLOCK(file_tree);
+			update_info_text(NULL);
 			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 		}
 		#endif
@@ -3265,6 +3268,7 @@ void relative_image_movement(ptrdiff_t movement) {/*{{{*/
 		montage_window_control.selected_node = target;
 		montage_window_move_cursor(0, 0,  0);
 		D_UNLOCK(file_tree);
+		update_info_text(NULL);
 		gtk_widget_queue_draw(GTK_WIDGET(main_area));
 		return;
 	}
@@ -3410,6 +3414,7 @@ void directory_image_movement(int direction, gboolean logical_directories) {/*{{
 		montage_window_control.selected_node = target;
 		montage_window_move_cursor(0, 0,  0);
 		D_UNLOCK(file_tree);
+		update_info_text(NULL);
 	}
 	#endif
 }/*}}}*/
@@ -4171,6 +4176,79 @@ inline void info_text_queue_redraw() {/*{{{*/
 		);
 	}
 }/*}}}*/
+gchar *substitute_variables(const gchar *format, const gchar *action, BOSNode *node) {/*{{{*/
+	GString *result = g_string_new(NULL);
+	const char *format_iter = format;
+	const char *temporary_iter;
+	gchar *file_name = NULL;
+	file_t *file = FILE(node);
+	while(*format_iter) {
+		temporary_iter = g_strstr_len(format_iter, -1, "$");
+		if(!temporary_iter) {
+			g_string_append(result, format_iter);
+			break;
+		}
+		g_string_append_len(result, format_iter, (gssize)(temporary_iter - format_iter));
+
+		format_iter = temporary_iter + 1;
+
+		if(g_strstr_len(format_iter, 12, "BASEFILENAME") != NULL) {
+			if((file->file_flags & FILE_FLAGS_MEMORY_IMAGE) != 0) {
+				g_string_append(result, "-");
+			}
+			else {
+				if(file_name != NULL) {
+					file_name = g_filename_display_basename(file->file_name);
+				}
+				g_string_append(result, file_name);
+			}
+			format_iter += 12;
+		}
+		else if(g_strstr_len(format_iter, 8, "FILENAME") != NULL) {
+			g_string_append(result, file->display_name);
+			format_iter += 8;
+		}
+		else if(g_strstr_len(format_iter, 5, "WIDTH") != NULL) {
+			g_string_append_printf(result, "%d", file->width);
+			format_iter += 5;
+		}
+		else if(g_strstr_len(format_iter, 6, "HEIGHT") != NULL) {
+			g_string_append_printf(result, "%d", file->height);
+			format_iter += 6;
+		}
+		else if(g_strstr_len(format_iter, 4, "ZOOM") != NULL) {
+			double scale_level = current_scale_level;
+			#ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
+			if(application_mode == MONTAGE) {
+				const double scale_level_w = option_thumbnails.width * 1.0 / file->width;
+				const double scale_level_h = option_thumbnails.height * 1.0 / file->height;
+				scale_level = fmin(1., fmin(scale_level_w, scale_level_h));
+			}
+			#endif
+			g_string_append_printf(result, "%02.2f", (scale_level * 100));
+			format_iter += 4;
+		}
+		else if(g_strstr_len(format_iter, 12, "IMAGE_NUMBER") != NULL) {
+			g_string_append_printf(result, "%d", (unsigned int)(bostree_rank(node) + 1));
+			format_iter += 12;
+		}
+		else if(g_strstr_len(format_iter, 11, "IMAGE_COUNT") != NULL) {
+			g_string_append_printf(result, "%d", (unsigned int)(bostree_node_count(file_tree)));
+			format_iter += 11;
+		}
+		else {
+			g_string_append_c(result, '$');
+		}
+	}
+
+	/* Add action to status bar */
+	if(action != NULL) {
+		g_string_append_printf(result, " (%s)", action);
+	}
+
+	g_free(file_name);
+	return g_string_free(result, FALSE);
+}/*}}}*/
 void update_info_text(const gchar *action) {/*{{{*/
 	D_LOCK(file_tree);
 	current_info_text_cached_font_size = -1;
@@ -4183,7 +4261,18 @@ void update_info_text(const gchar *action) {/*{{{*/
 			}
 			current_info_text = g_strdup("Montage mode");
 		}
+		if(!option_hide_status_bar) {
+			if(montage_window_control.selected_node != NULL && FILE(montage_window_control.selected_node) != NULL) {
+				gchar *new_status = substitute_variables(option_status_bar_text, action, montage_window_control.selected_node);
+				gtk_label_set_text(status_bar, new_status);
+				g_free(new_status);
+			}
+			else {
+				gtk_label_set_text(status_bar, "Montage mode");
+			}
+		}
 		gtk_window_set_title(GTK_WINDOW(main_window), "pqiv: Montage mode");
+
 		D_UNLOCK(file_tree);
 		return;
 	}
@@ -4203,18 +4292,11 @@ void update_info_text(const gchar *action) {/*{{{*/
 			}
 		}
 		gtk_window_set_title(GTK_WINDOW(main_window), "pqiv: No image loaded");
-		gtk_label_set_text(status_bar, current_info_text);
+		gtk_label_set_text(status_bar, "No image loaded");
 		D_UNLOCK(file_tree);
 		return;
 	}
 
-	gchar *file_name;
-	if((CURRENT_FILE->file_flags & FILE_FLAGS_MEMORY_IMAGE) != 0) {
-		file_name = g_strdup_printf("-");
-	}
-	else {
-		file_name = g_strdup(CURRENT_FILE->file_name);
-	}
 	const gchar *display_name = CURRENT_FILE->display_name;
 
 	// Free old info text
@@ -4231,7 +4313,6 @@ void update_info_text(const gchar *action) {/*{{{*/
 		gtk_window_set_title(GTK_WINDOW(main_window), "pqiv");
 		gtk_label_set_text(status_bar, current_info_text);
 
-		g_free(file_name);
 		D_UNLOCK(file_tree);
 		return;
 	}
@@ -4251,60 +4332,21 @@ void update_info_text(const gchar *action) {/*{{{*/
 			g_free(old_info_text);
 		}
 
-		gtk_label_set_text(status_bar, current_info_text);
 	}
 
-	// Prepare main window title
-	GString *new_window_title = g_string_new(NULL);
-	const char *window_title_iter = option_window_title;
-	const char *temporary_iter;
-	while(*window_title_iter) {
-		temporary_iter = g_strstr_len(window_title_iter, -1, "$");
-		if(!temporary_iter) {
-			g_string_append(new_window_title, window_title_iter);
-			break;
-		}
-		g_string_append_len(new_window_title, window_title_iter, (gssize)(temporary_iter - window_title_iter));
-
-		window_title_iter = temporary_iter + 1;
-
-		if(g_strstr_len(window_title_iter, 12, "BASEFILENAME") != NULL) {
-			temporary_iter = g_filename_display_basename(file_name);
-			g_string_append(new_window_title, temporary_iter);
-			window_title_iter += 12;
-		}
-		else if(g_strstr_len(window_title_iter, 8, "FILENAME") != NULL) {
-			g_string_append(new_window_title, display_name);
-			window_title_iter += 8;
-		}
-		else if(g_strstr_len(window_title_iter, 5, "WIDTH") != NULL) {
-			g_string_append_printf(new_window_title, "%d", CURRENT_FILE->width);
-			window_title_iter += 5;
-		}
-		else if(g_strstr_len(window_title_iter, 6, "HEIGHT") != NULL) {
-			g_string_append_printf(new_window_title, "%d", CURRENT_FILE->height);
-			window_title_iter += 6;
-		}
-		else if(g_strstr_len(window_title_iter, 4, "ZOOM") != NULL) {
-			g_string_append_printf(new_window_title, "%02.2f", (current_scale_level * 100));
-			window_title_iter += 4;
-		}
-		else if(g_strstr_len(window_title_iter, 12, "IMAGE_NUMBER") != NULL) {
-			g_string_append_printf(new_window_title, "%d", (unsigned int)(bostree_rank(current_file_node) + 1));
-			window_title_iter += 12;
-		}
-		else if(g_strstr_len(window_title_iter, 11, "IMAGE_COUNT") != NULL) {
-			g_string_append_printf(new_window_title, "%d", (unsigned int)(bostree_node_count(file_tree)));
-			window_title_iter += 11;
-		}
-		else {
-			g_string_append_c(new_window_title, '$');
-		}
+	// Update status bar
+	if(!option_hide_status_bar) {
+		gchar *new_status = substitute_variables(option_status_bar_text, action, current_file_node);
+		gtk_label_set_text(status_bar, new_status);
+		g_free(new_status);
 	}
+
+	// Update main window title
+	gchar *new_window_title = substitute_variables(option_window_title, NULL, current_file_node);
+	gtk_window_set_title(GTK_WINDOW(main_window), new_window_title);
+	g_free(new_window_title);
+
 	D_UNLOCK(file_tree);
-	g_free(file_name);
-	gtk_window_set_title(GTK_WINDOW(main_window), new_window_title->str);
-	g_string_free(new_window_title, TRUE);
 }/*}}}*/
 #endif
 gboolean window_close_callback(GtkWidget *object, gpointer user_data) {/*{{{*/
@@ -5884,6 +5926,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 							montage_window_move_cursor(0, 0,  0);
 							D_UNLOCK(file_tree);
 							gtk_widget_queue_draw(GTK_WIDGET(main_area));
+							update_info_text(NULL);
 						}
 						#endif
 					}
@@ -5925,6 +5968,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 							montage_window_move_cursor(0, 0, 0);
 							D_UNLOCK(file_tree);
 							gtk_widget_queue_draw(GTK_WIDGET(main_area));
+							update_info_text(NULL);
 						}
 						#endif
 					}
@@ -6183,6 +6227,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 				D_LOCK(file_tree);
 				montage_window_move_cursor(0, 0, 0);
 				D_UNLOCK(file_tree);
+				update_info_text(NULL);
 				gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			}
 			break;
@@ -6238,6 +6283,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			D_LOCK(file_tree);
 			montage_window_move_cursor(parameter.pint, 0, 0);
 			D_UNLOCK(file_tree);
+			update_info_text(NULL);
 			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
@@ -6248,6 +6294,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			D_LOCK(file_tree);
 			montage_window_move_cursor(0, parameter.pint, 0);
 			D_UNLOCK(file_tree);
+			update_info_text(NULL);
 			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
@@ -6264,6 +6311,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 				break;
 			}
 			montage_window_set_cursor(parameter.pint, -1);
+			update_info_text(NULL);
 			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
@@ -6272,6 +6320,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 				break;
 			}
 			montage_window_set_cursor(-1, parameter.pint);
+			update_info_text(NULL);
 			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
@@ -6282,6 +6331,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			D_LOCK(file_tree);
 			montage_window_move_cursor(0, 0, parameter.pint);
 			D_UNLOCK(file_tree);
+			update_info_text(NULL);
 			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 
@@ -6457,6 +6507,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			montage_window_control.show_binding_overlays = 0;
 			if(parameter.p2short.p1 >= 0 || parameter.p2short.p2 >= 0) {
 				montage_window_set_cursor(parameter.p2short.p1, parameter.p2short.p2);
+				update_info_text(NULL);
 			}
 			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			// If we have an action chain to continue, do that *now*, because we will
@@ -6587,6 +6638,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			}
 			montage_window_move_cursor(0, 0, 0);
 			D_UNLOCK(file_tree);
+			update_info_text(NULL);
 			gtk_widget_queue_draw(GTK_WIDGET(main_area));
 			break;
 #endif // without montage
@@ -6686,6 +6738,7 @@ gboolean window_configure_callback(GtkWidget *widget, GdkEventConfigure *event, 
 		D_LOCK(file_tree);
 		montage_window_move_cursor(0, 0, 0);
 		D_UNLOCK(file_tree);
+		update_info_text(NULL);
 	}
 	#endif
 
@@ -6929,6 +6982,7 @@ gboolean window_button_press_callback(GtkWidget *widget, GdkEventButton *event, 
 		if(event->y < 0) event->y = 0;
 
 		montage_window_set_cursor((int)(event->x / (option_thumbnails.width + 10)), (int)(event->y / (option_thumbnails.height + 10)));
+		update_info_text(NULL);
 		gtk_widget_queue_draw(GTK_WIDGET(main_area));
 		if(event->type == GDK_2BUTTON_PRESS) {
 			pqiv_action_parameter_t empty_param = { .pint = 0 };

@@ -4320,7 +4320,7 @@ void substitute_variables(const gchar *format, const gchar *action, BOSNode *nod
 	cb(g_string_free(result, FALSE));
 }/*}}}*/
 gboolean update_status_bar(gpointer status) {/*{{{*/
-	gtk_label_set_text(status_bar, g_strstrip(status));
+	gtk_label_set_markup(status_bar, g_strstrip(status));
 	g_free(status);
 	return FALSE;
 }/*}}}*/
@@ -4346,7 +4346,7 @@ void update_info_text(const gchar *action) {/*{{{*/
 				substitute_variables(option_status_bar_text, action, montage_window_control.selected_node, update_status_bar);
 			}
 			else {
-				gtk_label_set_text(status_bar, "Montage mode");
+				gtk_label_set_markup(status_bar, "Montage mode");
 			}
 		}
 		gtk_window_set_title(GTK_WINDOW(main_window), "pqiv: Montage mode");
@@ -4370,7 +4370,7 @@ void update_info_text(const gchar *action) {/*{{{*/
 			}
 		}
 		gtk_window_set_title(GTK_WINDOW(main_window), "pqiv: No image loaded");
-		gtk_label_set_text(status_bar, "No image loaded");
+		gtk_label_set_markup(status_bar, "No image loaded");
 		D_UNLOCK(file_tree);
 		return;
 	}
@@ -4389,7 +4389,7 @@ void update_info_text(const gchar *action) {/*{{{*/
 			current_info_text = g_strdup_printf("%s (Image is still loading...)", display_name);
 		}
 		gtk_window_set_title(GTK_WINDOW(main_window), "pqiv");
-		gtk_label_set_text(status_bar, current_info_text);
+		gtk_label_set_markup(status_bar, current_info_text);
 
 		D_UNLOCK(file_tree);
 		return;
@@ -7381,6 +7381,7 @@ void create_window() { /*{{{*/
 
 	gtk_widget_set_halign(GTK_WIDGET(status_bar), GTK_ALIGN_START);
 	gtk_label_set_use_markup(status_bar, TRUE);
+	gtk_label_set_ellipsize(status_bar, PANGO_ELLIPSIZE_END);
 	gtk_container_add(GTK_CONTAINER(main_window), GTK_WIDGET(main_container));
 	gtk_box_pack_start(main_container, GTK_WIDGET(main_area), TRUE, TRUE, 0);
 	if(!option_hide_status_bar) {

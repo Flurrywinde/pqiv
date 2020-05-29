@@ -5267,6 +5267,7 @@ gboolean window_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer user_
 	}/*}}}*/
 #endif
 double calculate_scale_level_to_fit(int image_width, int image_height, int window_width, int window_height) {/*{{{*/
+	printf("os: %i\n", option_scale);
 	if(scale_override || option_scale == FIXED_SCALE) {
 		return current_scale_level;
 	}
@@ -5302,11 +5303,13 @@ double calculate_scale_level_to_fit(int image_width, int image_height, int windo
 		// This is scale mode 5: maintain window's size. Large images shrink to fit. Small images scale up to fit.
 		scale_level = fmin(scale_to_fit_size.width * 1. / image_width, scale_to_fit_size.height * 1. / image_height);
 		// Kanon added to keep small images from enlarging too much
-		// printf("Scale: %f\n", scale_level);
 		if(scale_level > 2) scale_level = 2;
 	}
 	else if(option_scale == SCALE_TO_FIT_WINDOW) {
+		// This is scale mode 4: maintain user-set zoom.
 		scale_level = fmin(window_width * 1. / image_width, window_height * 1. / image_height);
+		// Keep small images from getting humongous
+		if(scale_level > 2) scale_level = 2;
 	}
 
 	return scale_level;
@@ -5331,6 +5334,8 @@ double calculate_auto_scale_level_for_screen(int image_width, int image_height) 
 			}
 			else if(option_scale == SCALE_TO_FIT_WINDOW) {
 				scale_level = fmin(main_window_width * 1. / image_width, main_window_height * 1. / image_height);
+				// Keep small images from getting humongous
+				if(scale_level > 2) scale_level = 2;
 			}
 			else if(option_scale == AUTO_SCALEDOWN && image_width > screen_width * option_scale_screen_fraction) {
 				// Scale down to screen size

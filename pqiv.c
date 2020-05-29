@@ -5017,7 +5017,8 @@ void prerender_background_pixmap(int area_width, int area_height, double scale_l
 			// Failure, abort.
 			return;
 		}
-		/* const Screen *xscreen = window_attributes.screen;
+		/* original:
+		const Screen *xscreen = window_attributes.screen;
 		XVisualInfo visual_info_template = { .visualid = window_attributes.visual->visualid };
 		int visual_infos_found;
 		XVisualInfo *visual_info = XGetVisualInfo(display, VisualIDMask, &visual_info_template, &visual_infos_found);

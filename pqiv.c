@@ -5521,7 +5521,6 @@ gboolean main_area_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer us
 	}/*}}}*/
 #endif
 double calculate_scale_level_to_fit(int image_width, int image_height, int window_width, int window_height) {/*{{{*/
-	printf("os: %i\n", option_scale);
 	if(scale_override || option_scale == FIXED_SCALE) {
 		return current_scale_level;
 	}
@@ -6843,8 +6842,10 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			switch(parameter.pint) {
 				case 0:
 					option_background_gradient = !option_background_gradient;
+					break;
 				case 1:
 					option_background_gradient = 0;
+					break;
 				default:
 					option_background_gradient = 1;
 			}

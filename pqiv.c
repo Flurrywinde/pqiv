@@ -683,6 +683,7 @@ const struct pqiv_action_descriptor {
 	{ "goto_file_byname", PARAMETER_CHARPTR },
 	{ "remove_file_byindex", PARAMETER_INT },
 	{ "remove_file_byname", PARAMETER_CHARPTR },
+	{ "remove_current", PARAMETER_NONE },
 	{ "output_file_list", PARAMETER_NONE },
 	{ "set_cursor_visibility", PARAMETER_INT },
 	{ "set_status_output", PARAMETER_INT },
@@ -764,6 +765,7 @@ void queue_thumbnail_load(BOSNode *);
 #endif
 void unload_image(BOSNode *);
 void remove_image(BOSNode *);
+void remove_current();
 gboolean initialize_gui_callback(gpointer);
 gboolean initialize_image_loader();
 void window_hide_cursor();
@@ -6091,6 +6093,11 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			g_thread_new("image-loader-from-action", (GThreadFunc)load_images_handle_parameter_thread, g_strdup(parameter.pcharptr));
 			break;
 
+		case ACTION_REMOVE_CURRENT:
+			remove_current();
+			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			break;
+
 		case ACTION_GOTO_FILE_BYINDEX:
 		case ACTION_REMOVE_FILE_BYINDEX:
 			{
@@ -8458,4 +8465,60 @@ int main(int argc, char *argv[]) {
 	return 0;
 }
 
+
+void remove_current() {/*{{{*/
+	BOSNode *next_node;
+
+	if(application_mode == DEFAULT) {
+		remove_image(current_file_node);
+	}
+	#ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
+	else if(application_mode == MONTAGE) {
+		//current_file_node = montage_window_control.selected_node;
+		//remove_image(montage_window_control.selected_node);   // Didn't work with both this and current_file_node
+		// perform_string_action(strcat("remove_file_byindex(", 
+		// Argh, hard to concat string and int. See: https://cboard.cprogramming.com/c-programming/114440-how-combine-string-integer.html
+		// Removed 05/28/20-pqiv_action_parameter_t parm = { .pint = bostree_rank(montage_window_control.selected_node) };
+		// Removed 05/28/20-queue_action(ACTION_REMOVE_FILE_BYINDEX, parm);
+		//montage_window_set_cursor(parameter.pint, -1);
+		//gtk_widget_queue_draw(GTK_WIDGET(main_window));
+		// Works, except gives failed to load image and error opening file...: Is a directory if remove first image in montage mode. Also, resets to first image.
+		// 05/28/20-Dunno why I said it works. This time, got above error even if not first image. Rewrite. (Was just the above 2 lines that say removed today.)
+		int selected_node_rank = bostree_rank(montage_window_control.selected_node);
+		D_LOCK(file_tree);
+		BOSNode *node = bostree_select(file_tree, selected_node_rank);
+		if(node == current_file_node) {
+			/* From montage mode, goto_file_relative, but I think relative_image_movement handles everything already:
+			target_index = bostree_rank(relative_image_pointer(binding->parameter.pint));
+			data.current_y = target_index / n_thumbs_x - montage_window_control.scroll_y;
+			data.current_x = target_index % n_thumbs_x; */
+			printf("removing current\n");
+			next_node = bostree_next_node(node);
+			next_node = next_node ? next_node : bostree_select(file_tree, 0);
+			// next_node = bostree_node_weak_ref(next_node);  // Not sure if need this line. Seems to work with and without. (Added it initially to see if it would stop the freezing.)
+		} else {
+			// select proper image in this case too
+			next_node = current_file_node;
+		}
+		if(node) {
+			node = bostree_node_weak_ref(node);
+		}
+		D_UNLOCK(file_tree);
+
+		if(!node) {
+			g_printerr("remove_current: Image #%d not found.\n", selected_node_rank);
+		} else {
+			relative_image_movement(bostree_rank(next_node));
+			remove_image(node);
+		}
+		// Current state of affairs: has successfully removed images in montage mode in all test cases. However:
+		// 1. gives "Failed to load image <filename>: Error opening file /home/kanon/util/pqiv: Is a directory" if remove [s]first image[/s] current image in both regular and montage mode.
+		// 2. Also, resets to first image.
+		// 3. Selection box disappears sometimes. To replicate: In regular mode, set current to #2, enter montage mode, remove #1. Selection box disappears.
+		// I think all 3 of these issues will disappear if implement a current image calculation and set it.
+		// Ok, added check, but doesn't work (freezes).
+		// Ok, no longer freezes when moved relative_image_movement to end. #3 (selection box disappearing) no longer happens, but selects 2 ahead instead of next 1. In other cases, still resets to first (#2).
+	}
+	#endif
+}/*}}}*/
 // vim:noet ts=4 sw=4 tw=0 fdm=marker

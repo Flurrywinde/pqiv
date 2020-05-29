@@ -788,6 +788,9 @@ gboolean read_commands_thread_helper(gpointer command);
 void recreate_window();
 static void status_output();
 void handle_input_event(guint key_binding_value);
+static void continue_active_input_event_action_chain();
+static void UNUSED_FUNCTION block_active_input_event_action_chain();
+static void UNUSED_FUNCTION unblock_active_input_event_action_chain();
 void draw_current_image_to_context(cairo_t *cr);
 gboolean window_auto_hide_cursor_callback(gpointer user_data);
 #ifndef CONFIGURED_WITHOUT_ACTIONS
@@ -2977,6 +2980,10 @@ gboolean absolute_image_movement(BOSNode *ref) {/*{{{*/
 	if(current_file_node != earlier_file_node) {
 		invalidate_current_scaled_image_surface();
 	}
+
+	// Update the active key binding such that redraws of the old image do not
+	// continue an active action chain anymore
+	active_key_binding.associated_image = current_file_node;
 #else
 	if(current_file_node != NULL) {
 		bostree_node_weak_unref(file_tree, current_file_node);
@@ -3961,6 +3968,10 @@ void do_jump_dialog() { /* {{{ */
 	 */
 	GtkTreeIter search_list_iter;
 
+	// For the duration of the dialog, inhibit the input action chain from
+	// continuing
+	block_active_input_event_action_chain();
+
 	// If in fullscreen, show the cursor again
 	if(main_window_in_fullscreen) {
 		window_center_mouse();
@@ -4075,12 +4086,14 @@ void do_jump_dialog() { /* {{{ */
 	gtk_widget_destroy(dlg_window);
 	g_object_unref(search_list);
 	g_object_unref(search_list_filter);
+
+	unblock_active_input_event_action_chain();
 } /* }}} */
 #endif
 // }}}
 /* Main window functions {{{ */
 gboolean window_fullscreen_helper_reset_transition_id() {/*{{{*/
-	action_done();
+	unblock_active_input_event_action_chain();
 	fullscreen_transition_source_id = -1;
 	return FALSE;
 }/*}}}*/
@@ -4121,6 +4134,7 @@ void window_fullscreen() {/*{{{*/
 		g_source_remove(fullscreen_transition_source_id);
 	}
 	fullscreen_transition_source_id = g_timeout_add(500, window_fullscreen_helper_reset_transition_id, NULL);
+	block_active_input_event_action_chain();
 	gtk_window_fullscreen(main_window);
 }/*}}}*/
 void window_unfullscreen() {/*{{{*/
@@ -4159,6 +4173,7 @@ void window_unfullscreen() {/*{{{*/
 	if(fullscreen_transition_source_id >= 0) {
 		g_source_remove(fullscreen_transition_source_id);
 	}
+	block_active_input_event_action_chain();
 	fullscreen_transition_source_id = g_timeout_add(500, window_fullscreen_helper_reset_transition_id, NULL);
 	gtk_window_unfullscreen(main_window);
 }/*}}}*/
@@ -6722,9 +6737,9 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 			break;
 	}
 
-	// The current action is done, and the function wasn't explicitly returned
-	// from. Issue the next action, if one's in the queue, to be run.
-	action_done();
+	// By default execute the next action from a chain of actions bound to a key
+	// immediately; unless an action explicitly return'ed above.
+	continue_active_input_event_action_chain();
 }/*}}}*/
 gboolean window_configure_callback(GtkWidget *widget, GdkEventConfigure *event, gpointer user_data) {/*{{{*/
 	/*
@@ -6795,9 +6810,7 @@ gboolean window_configure_callback(GtkWidget *widget, GdkEventConfigure *event, 
 		}
 
 		// Rescale the image
-		if(main_window_width != event->width || main_window_height != event->height) {
-			set_scale_level_to_fit();
-		}
+		set_scale_level_to_fit();
 		queue_draw();
 
 		// We need to redraw in old GTK versions to avoid artifacts
@@ -6828,6 +6841,29 @@ gboolean handle_input_event_timeout_callback(gpointer user_data) {/*{{{*/
 	return FALSE;
 }/*}}}*/
 #endif
+static void continue_active_input_event_action_chain() {/*{{{*/
+#ifndef CONFIGURED_WITHOUT_ACTIONS
+	if(active_key_binding.timeout_id == -1 && active_key_binding.key_binding && (active_key_binding.associated_image == current_file_node || !active_key_binding.associated_image)) {
+		key_binding_t *binding = active_key_binding.key_binding;
+		active_key_binding.key_binding = binding->next_action;
+		action(binding->action, binding->parameter);
+	}
+#endif
+}/*}}}*/
+static void UNUSED_FUNCTION block_active_input_event_action_chain() {/*{{{*/
+#ifndef CONFIGURED_WITHOUT_ACTIONS
+	if(active_key_binding.timeout_id == -1 && active_key_binding.key_binding) {
+		active_key_binding.timeout_id = -2;
+	}
+#endif
+}/*}}}*/
+static void UNUSED_FUNCTION unblock_active_input_event_action_chain() {/*{{{*/
+#ifndef CONFIGURED_WITHOUT_ACTIONS
+	if(active_key_binding.timeout_id == -2 && active_key_binding.key_binding) {
+		active_key_binding.timeout_id = -1;
+	}
+#endif
+}/*}}}*/
 void handle_input_event(guint key_binding_value) {/*{{{*/
 	/* Debug
 	char *debug_keybinding = key_binding_sequence_to_string(key_binding_value, NULL);
@@ -6862,6 +6898,7 @@ void handle_input_event(guint key_binding_value) {/*{{{*/
 			key_binding_t *binding = active_key_binding.key_binding;
 			active_key_binding.key_binding = binding->next_action;
 			queue_action_from_binding(binding);
+			// sloonz had instead: action(binding->action, binding->parameter);
 			return;
 		}
 		active_key_binding.key_binding = NULL;
@@ -6896,6 +6933,7 @@ void handle_input_event(guint key_binding_value) {/*{{{*/
 			active_key_binding.key_binding = binding->next_action;
 			active_key_binding.associated_image = current_file_node;
 			queue_action_from_binding(binding);
+			// sloonz had instead: action(binding->action, binding->parameter);
 		}
 	}
 
@@ -7163,7 +7201,7 @@ gboolean window_state_into_fullscreen_actions(gpointer user_data) {/*{{{*/
 		gtk_widget_queue_draw(GTK_WIDGET(main_area));
 	#endif
 	fullscreen_transition_source_id = -1;
-	action_done();
+	unblock_active_input_event_action_chain();
 	return FALSE;
 }/*}}}*/
 gboolean window_state_out_of_fullscreen_actions(gpointer user_data) {/*{{{*/
@@ -7185,7 +7223,7 @@ gboolean window_state_out_of_fullscreen_actions(gpointer user_data) {/*{{{*/
 	}
 	invalidate_current_scaled_image_surface();
 	fullscreen_transition_source_id = -1;
-	action_done();
+	unblock_active_input_event_action_chain();
 	return FALSE;
 }/*}}}*/
 gboolean window_state_callback(GtkWidget *widget, GdkEventWindowState *event, gpointer user_data) {/*{{{*/
@@ -7562,6 +7600,7 @@ void help_show_key_bindings_helper(gpointer key, gpointer value, gpointer user_d
 
 	g_print("%30s %c ", str_key, KEY_BINDINGS_COMMANDS_BEGIN_SYMBOL);
 	for(key_binding_t *current_action = key_binding; current_action; current_action = current_action->next_action) {
+		// sloonz different here
 		help_show_single_action(current_action);
 	}
 	g_print("%c \n", KEY_BINDINGS_COMMANDS_END_SYMBOL);
@@ -7644,7 +7683,7 @@ void parse_key_bindings(const gchar *bindings) {/*{{{*/
 				}
 
 				current_command_start = scan;
-				/* fall through */
+				// Missing break is intentional, fall through to case 1.
 
 			case 1: // Expecting continuation of key description or start of command
 				switch(*scan) {

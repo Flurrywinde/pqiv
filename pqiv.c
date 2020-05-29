@@ -5236,9 +5236,9 @@ gboolean main_area_draw_callback(GtkWidget *widget, cairo_t *cr_arg, gpointer us
 			cairo_pattern_t *bg_pattern = cairo_pattern_create_mesh();
 			cairo_mesh_pattern_begin_patch(bg_pattern);
 			cairo_mesh_pattern_move_to(bg_pattern, 0, 0);
-			cairo_mesh_pattern_line_to(bg_pattern, main_window_width, 0);
-			cairo_mesh_pattern_line_to(bg_pattern, main_window_width, main_window_height);
-			cairo_mesh_pattern_line_to(bg_pattern, 0, main_window_height);
+			cairo_mesh_pattern_line_to(bg_pattern, main_area_width, 0);
+			cairo_mesh_pattern_line_to(bg_pattern, main_area_width, main_area_height);
+			cairo_mesh_pattern_line_to(bg_pattern, 0, main_area_height);
 			struct color color;
 			{
 				cairo_rectangle_int_t corner = { 0, 0, 50, 50 };

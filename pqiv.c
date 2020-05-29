@@ -5299,7 +5299,11 @@ double calculate_scale_level_to_fit(int image_width, int image_height, int windo
 		}
 	}
 	else if(option_scale == SCALE_TO_FIT_PX) {
+		// This is scale mode 5: maintain window's size. Large images shrink to fit. Small images scale up to fit.
 		scale_level = fmin(scale_to_fit_size.width * 1. / image_width, scale_to_fit_size.height * 1. / image_height);
+		// Kanon added to keep small images from enlarging too much
+		// printf("Scale: %f\n", scale_level);
+		if(scale_level > 2) scale_level = 2;
 	}
 	else if(option_scale == SCALE_TO_FIT_WINDOW) {
 		scale_level = fmin(window_width * 1. / image_width, window_height * 1. / image_height);
@@ -5322,6 +5326,8 @@ double calculate_auto_scale_level_for_screen(int image_width, int image_height) 
 			}
 			else if(option_scale == SCALE_TO_FIT_PX) {
 				scale_level = fmin(scale_to_fit_size.width * 1. / image_width, scale_to_fit_size.height * 1. / image_height);
+				// Keep small images from getting humongous
+				if(scale_level > 2) scale_level = 2;
 			}
 			else if(option_scale == SCALE_TO_FIT_WINDOW) {
 				scale_level = fmin(main_window_width * 1. / image_width, main_window_height * 1. / image_height);

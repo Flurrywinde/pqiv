@@ -6902,6 +6902,7 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 					option_background_gradient = 1;
 			}
 			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+			break;
 		case ACTION_TOGGLE_MARK:
 			toggle_mark(parameter.pint);
 			break;

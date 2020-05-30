@@ -721,6 +721,8 @@ const struct pqiv_action_descriptor {
 	{ "toggle_background_pattern", PARAMETER_INT },
 	{ "toggle_negate_mode", PARAMETER_INT },
 	{ "toggle_background_gradient", PARAMETER_INT },
+	{ "toggle_mark", PARAMETER_INT },
+	{ "clear_marks", PARAMETER_NONE },
 	{ NULL, 0 }
 };
 /* }}} */
@@ -804,6 +806,12 @@ void draw_current_image_to_context(cairo_t *cr);
 gboolean window_auto_hide_cursor_callback(gpointer user_data);
 #ifndef CONFIGURED_WITHOUT_ACTIONS
 gboolean handle_input_event_timeout_callback(gpointer user_data);
+void toggle_mark(int id);
+void clear_marks();
+char *get_all_marked();
+#if defined (__GLIBC__)
+	FILE *open_memstream(char **ptr, size_t *sizeloc);
+#endif
 #endif
 #ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
 gboolean montage_window_get_move_cursor_target(int, int, int, int*, int*, int*, BOSNode **);
@@ -1546,6 +1554,7 @@ void load_images_handle_parameter(char *param, load_images_state_t state, gint d
 	// Check for memory image
 	if(state == PARAMETER && g_strcmp0(param, "-") == 0) {
 		file = g_slice_new0(file_t);
+		file->marked = -1;
 		file->file_flags = FILE_FLAGS_MEMORY_IMAGE;
 		file->display_name = g_strdup("-");
 		if(option_sort) {
@@ -1745,6 +1754,7 @@ void load_images_handle_parameter(char *param, load_images_state_t state, gint d
 		file = g_slice_new0(file_t);
 		file->file_name = g_strdup(param);
 		file->display_name = g_filename_display_name(param);
+		file->marked = -1;
 		g_mutex_init(&file->lock);
 		if(option_sort) {
 			if(option_sort_key == MTIME) {
@@ -3562,6 +3572,23 @@ void apply_external_image_filter(gchar *external_filter) {/*{{{*/
 		// Reminder: Do not free the others, they are string constants
 		g_free(argv[2]);
 	}
+	else if(external_filter[0] == '<') {
+		char *marklist = get_all_marked();
+		// argv[2] = apply_external_image_filter_prepare_command(external_filter + 1);
+		// printf("%s\n", argv[2]);
+		// This does it a different way, so rest of argv not used.
+		// if(g_spawn_async(NULL, argv, NULL, 0, NULL, NULL, NULL, &error_pointer) == FALSE) {  // For diff between this and popen, see: https://stackoverflow.com/questions/219138/get-command-output-in-pipe-c-for-linux
+		FILE *fp = popen(external_filter + 1, "w");
+		if(!fp) {
+			g_printerr("Failed execute external command `%s': %s\n", argv[2], error_pointer->message);
+			g_clear_error(&error_pointer);
+		} else {
+			fprintf(fp, "%s", marklist);
+			pclose(fp);
+		}
+		// g_free(argv[2]);
+		free(marklist);
+	}
 	else if(external_filter[0] == '|') {
 		// Pipe image into program, read image from its stdout
 		argv[2] = external_filter + 1;
@@ -4958,6 +4985,19 @@ gboolean window_draw_thumbnail_montage(cairo_t *cr_arg) {/*{{{*/
 				cairo_stroke(cr_arg);
 			}
 
+			// Marks
+			if(thumb_file->marked == 1) {
+				// printf("%s is marked\n", thumb_file->display_name);
+				int markx = cairo_image_surface_get_width(thumb_file->thumbnail);
+				int marky = cairo_image_surface_get_height(thumb_file->thumbnail);
+				cairo_rectangle(cr_arg, markx - 5, marky - 5, markx + 1, marky + 1);
+				cairo_set_source_rgb(cr_arg, 0, 0, 0);
+				cairo_set_line_width(cr_arg, 1);
+				cairo_stroke_preserve(cr_arg);
+				cairo_set_source_rgb(cr_arg, 1, 1, 1);
+				cairo_fill(cr_arg);
+			}
+
 			cairo_restore(cr_arg);
 		}
 		else if(top_left_id + draw_now == selection_rank) {
@@ -6075,7 +6115,12 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 					info_text_queue_redraw();
 				}
 				else {
-					UPDATE_INFO_TEXT("Executing command %s", command);
+					if(command[0] == '<') {
+						UPDATE_INFO_TEXT("Executing command %s", command + 1);
+					}
+					else {
+						UPDATE_INFO_TEXT("Executing command %s", command);
+					}
 					info_text_queue_redraw();
 					gtk_widget_queue_draw(GTK_WIDGET(main_area));
 
@@ -6857,6 +6902,12 @@ void action(pqiv_action_t action_id, pqiv_action_parameter_t parameter) {/*{{{*/
 					option_background_gradient = 1;
 			}
 			gtk_widget_queue_draw(GTK_WIDGET(main_window));
+		case ACTION_TOGGLE_MARK:
+			toggle_mark(parameter.pint);
+			break;
+
+		case ACTION_CLEAR_MARKS:
+			clear_marks();
 			break;
 
 		default:
@@ -8499,4 +8550,52 @@ void remove_current() {/*{{{*/
 	}
 	#endif
 }/*}}}*/
+
+void clear_marks() {
+	D_LOCK(file_tree);
+	printf("Clearing marks\n");
+	for(BOSNode *iter = bostree_select(file_tree, 0); iter; iter = bostree_next_node(iter)) {
+		FILE(iter)->marked = -1;
+	}
+	D_UNLOCK(file_tree);
+}
+
+void toggle_mark(int id) {
+	// Not using id for now. Just mark current.
+
+	if(application_mode == DEFAULT) {
+		if(FILE(current_file_node)->marked == 1) {
+			FILE(current_file_node)->marked = -1;
+		} else {
+			FILE(current_file_node)->marked = 1;
+		}
+	}
+	#ifndef CONFIGURED_WITHOUT_MONTAGE_MODE
+	else if(application_mode == MONTAGE) {
+		if(FILE(montage_window_control.selected_node)->marked == 1) {
+			FILE(montage_window_control.selected_node)->marked = -1;
+		} else {
+			FILE(montage_window_control.selected_node)->marked = 1;
+		}
+	}
+	#endif
+}
+
+char *get_all_marked() {
+	char* result = NULL;
+	size_t resultSize = 0;
+	FILE* stream = open_memstream(&result, &resultSize);
+
+	printf("Getting all marks\n");
+	D_LOCK(file_tree);
+	for(BOSNode *iter = bostree_select(file_tree, 0); iter; iter = bostree_next_node(iter)) {
+		file_t *file = FILE(iter);
+		if(file->marked == 1) {
+			fprintf(stream, "%s\n", file->file_name);
+		}
+	}
+	D_UNLOCK(file_tree);
+	fclose(stream);
+	return result;
+}
 // vim:noet ts=4 sw=4 tw=0 fdm=marker
